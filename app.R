@@ -31,31 +31,44 @@ safe_div <- function(num, den) {
   ifelse(!is.na(den) & den > 0, num / den, 0)
 }
 
-color_scale <- function(x, palette = "good", na_color = "#f4f4f4") {
+color_scale <- function(x, palette = "good", dark = FALSE) {
+  na_color <- if (dark) "#1e293b" else "#f4f4f4"
+  mid_color <- if (dark) "#334155" else "#e8eef5"
   if (!is.numeric(x)) return(rep(na_color, length(x)))
   
   rng <- range(x, na.rm = TRUE)
   if (!is.finite(rng[1]) || rng[1] == rng[2]) {
-    return(ifelse(is.na(x), na_color, "#e8eef5"))
+    return(ifelse(is.na(x), na_color, mid_color))
   }
   
-  pal <- switch(
-    palette,
-    good  = colour_ramp(c("#f1f5f9", "#93c5fd", "#1d4ed8")),
-    value = colour_ramp(c("#ef4444", "#fef3c7", "#16a34a")),
-    bad   = colour_ramp(c("#f8fafc", "#fecaca", "#b91c1c")),
-    colour_ramp(c("#f8fafc", "#cbd5e1"))
-  )
+  pal <- if (dark) {
+    switch(
+      palette,
+      good  = colour_ramp(c("#1e3a5f", "#2563eb", "#93c5fd")),
+      value = colour_ramp(c("#7f1d1d", "#a16207", "#166534")),
+      bad   = colour_ramp(c("#1e293b", "#7f1d1d", "#ef4444")),
+      colour_ramp(c("#1e293b", "#475569"))
+    )
+  } else {
+    switch(
+      palette,
+      good  = colour_ramp(c("#f1f5f9", "#93c5fd", "#1d4ed8")),
+      value = colour_ramp(c("#ef4444", "#fef3c7", "#16a34a")),
+      bad   = colour_ramp(c("#f8fafc", "#fecaca", "#b91c1c")),
+      colour_ramp(c("#f8fafc", "#cbd5e1"))
+    )
+  }
   
   out <- pal(rescale(x, to = c(0, 1), from = rng))
   out[is.na(x)] <- na_color
   out
 }
 
-style_numeric <- function(vec, palette = "good") {
-  colors <- color_scale(vec, palette)
+style_numeric <- function(vec, palette = "good", dark = FALSE) {
+  colors <- color_scale(vec, palette, dark = dark)
+  text_col <- if (dark) "#f8fafc" else "#0f172a"
   function(value, index) {
-    list(background = colors[[index]], fontWeight = 600)
+    list(background = colors[[index]], color = text_col, fontWeight = 600)
   }
 }
 
@@ -83,13 +96,84 @@ team_cell <- function(data) {
   }
 }
 
-base_reactable <- function(data, columns, column_groups = NULL, default_sorted = "total_fp") {
+# Reactable's default td background is white and beats theme$backgroundColor.
+# Paint every cell so uncolored columns stay readable in dark mode.
+zebra_style <- function(dark = FALSE) {
+  function(value, index) {
+    odd <- as.integer(index) %% 2L == 1L
+    if (isTRUE(dark)) {
+      list(
+        background = if (odd) "#0f172a" else "#162033",
+        color = "#f8fafc"
+      )
+    } else {
+      list(
+        background = if (odd) "#ffffff" else "#f8fafc",
+        color = "#0f172a"
+      )
+    }
+  }
+}
+
+base_reactable <- function(data, columns, column_groups = NULL, default_sorted = "total_fp", dark = FALSE) {
   if (nrow(data) == 0) {
-    return(reactable(data.frame(Note = "No players match the current filters.")))
+    empty <- data.frame(Note = "No players match the current filters.")
+    return(reactable(
+      empty,
+      theme = if (dark) {
+        reactableTheme(color = "#f8fafc", backgroundColor = "#0f172a", borderColor = "#334155")
+      } else {
+        reactableTheme()
+      }
+    ))
   }
   
   sort_arg <- list()
   sort_arg[[default_sorted]] <- "desc"
+  
+  tbl_theme <- if (dark) {
+    reactableTheme(
+      color = "#f8fafc",
+      backgroundColor = "#0f172a",
+      borderColor = "#334155",
+      stripedColor = "#1e293b",
+      highlightColor = "#1e3a5f",
+      cellPadding = "7px 6px",
+      searchInputStyle = list(
+        width = "280px",
+        backgroundColor = "#1e293b",
+        color = "#f8fafc",
+        border = "1px solid #475569"
+      ),
+      inputStyle = list(
+        backgroundColor = "#1e293b",
+        color = "#f8fafc",
+        border = "1px solid #475569"
+      ),
+      selectStyle = list(
+        backgroundColor = "#1e293b",
+        color = "#f8fafc"
+      ),
+      paginationStyle = list(color = "#cbd5e1", backgroundColor = "#0f172a"),
+      pageButtonHoverStyle = list(backgroundColor = "#334155", color = "#f8fafc"),
+      pageButtonActiveStyle = list(backgroundColor = "#1e3a5f", color = "#f8fafc"),
+      headerStyle = list(
+        background = "#020617",
+        color = "#e2e8f0"
+      ),
+      style = list(fontFamily = "Oswald, Helvetica, Arial, sans-serif", fontSize = "13px", backgroundColor = "#0f172a")
+    )
+  } else {
+    reactableTheme(
+      color = "#0f172a",
+      backgroundColor = "#ffffff",
+      borderColor = "#e2e8f0",
+      stripedColor = "#f8fafc",
+      highlightColor = "#e0f2fe",
+      searchInputStyle = list(width = "280px"),
+      style = list(fontFamily = "Oswald, Helvetica, Arial, sans-serif", fontSize = "13px")
+    )
+  }
   
   reactable(
     data,
@@ -108,22 +192,15 @@ base_reactable <- function(data, columns, column_groups = NULL, default_sorted =
     defaultColDef = colDef(
       align = "center",
       minWidth = 68,
+      style = zebra_style(dark),
       headerStyle = list(
-        background = "#0f172a",
+        background = if (dark) "#020617" else "#0f172a",
         color = "#e2e8f0",
         fontWeight = 700,
-        borderBottom = "2px solid #1e293b"
+        borderBottom = if (dark) "2px solid #31a354" else "2px solid #1e293b"
       )
     ),
-    theme = reactableTheme(
-      color = "#0f172a",
-      backgroundColor = "#ffffff",
-      borderColor = "#e2e8f0",
-      stripedColor = "#f8fafc",
-      highlightColor = "#e0f2fe",
-      searchInputStyle = list(width = "280px"),
-      style = list(fontFamily = "Inter, Helvetica, Arial, sans-serif", fontSize = "13px")
-    ),
+    theme = tbl_theme,
     columns = columns
   )
 }
@@ -378,7 +455,7 @@ qb_stats <- official_all %>%
     ez_pass_td = replace_na(ez_pass_td, 0),
     cpoe = replace_na(cpoe, 0),
     total_epa = coalesce(pass_epa_pbp, passing_epa, 0) + coalesce(rush_epa_pbp, rushing_epa, 0),
-    total_fp = coalesce(official_fp, official_ppr, 0),
+    total_fp = coalesce(official_ppr, official_fp, 0),
     fp_g = safe_div(total_fp, games_played)
   ) %>%
   filter(position == "QB", attempts > 0 | rushing_yards != 0) %>%
@@ -399,7 +476,7 @@ all_teams <- sort(unique(na.omit(c(wr_stats$team, te_stats$team, rb_stats$team, 
 # Table builders
 # ---------------------------------------------------------------------------
 
-pass_catcher_table <- function(data, player_label = "Receiver", te = FALSE) {
+pass_catcher_table <- function(data, player_label = "Receiver", te = FALSE, dark = FALSE) {
   extra <- if (te) {
     list(
       total_td = colDef(name = "TDs"),
@@ -418,87 +495,87 @@ pass_catcher_table <- function(data, player_label = "Receiver", te = FALSE) {
     hidden_meta_cols(),
     list(
       rank = colDef(name = "Rk", minWidth = 48, filterable = FALSE),
-      player_name = colDef(name = player_label, align = "left", minWidth = 210, sticky = "left", cell = player_cell(data)),
-      team = colDef(name = "Team", minWidth = 84, cell = team_cell(data)),
+      player_name = colDef(name = player_label, align = "left", minWidth = 210, sticky = "left", cell = player_cell(data), style = zebra_style(dark)),
+      team = colDef(name = "Team", minWidth = 84, cell = team_cell(data), style = zebra_style(dark)),
       games_played = colDef(name = "G", minWidth = 46),
-      targets = colDef(name = "Tgt", style = style_numeric(data$targets, "good")),
+      targets = colDef(name = "Tgt", style = style_numeric(data$targets, "good", dark = dark)),
       receptions = colDef(name = "Rec"),
       receiving_yards = colDef(name = "Rec Yds", format = colFormat(separators = TRUE)),
       yards_after_catch = colDef(name = "YAC", format = colFormat(separators = TRUE)),
       air_yards = colDef(name = "Air Yds", format = colFormat(separators = TRUE)),
-      target_share = colDef(name = "Tgt %", format = colFormat(percent = TRUE, digits = 0), style = style_numeric(data$target_share, "good"))
+      target_share = colDef(name = "Tgt %", format = colFormat(percent = TRUE, digits = 0), style = style_numeric(data$target_share, "good", dark = dark))
     ),
     extra,
     list(
-      fumbles = colDef(name = "Fum", style = style_numeric(data$fumbles, "bad")),
+      fumbles = colDef(name = "Fum", style = style_numeric(data$fumbles, "bad", dark = dark)),
       rz_targets = colDef(name = "RZ Tgt"),
       rz_rec = colDef(name = "RZ Rec"),
-      rz_tgt_share = colDef(name = "RZ Tgt %", format = colFormat(percent = TRUE, digits = 0), style = style_numeric(data$rz_tgt_share, "good")),
-      rz_rec_share = colDef(name = "RZ Rec %", format = colFormat(percent = TRUE, digits = 0), style = style_numeric(data$rz_rec_share, "good")),
+      rz_tgt_share = colDef(name = "RZ Tgt %", format = colFormat(percent = TRUE, digits = 0), style = style_numeric(data$rz_tgt_share, "good", dark = dark)),
+      rz_rec_share = colDef(name = "RZ Rec %", format = colFormat(percent = TRUE, digits = 0), style = style_numeric(data$rz_rec_share, "good", dark = dark)),
       ez_targets = colDef(name = "EZ Tgt"),
       ez_rec = colDef(name = "EZ Rec"),
-      ez_tgt_share = colDef(name = "EZ Tgt %", format = colFormat(percent = TRUE, digits = 0), style = style_numeric(data$ez_tgt_share, "good")),
-      ez_rec_share = colDef(name = "EZ Rec %", format = colFormat(percent = TRUE, digits = 0), style = style_numeric(data$ez_rec_share, "good")),
+      ez_tgt_share = colDef(name = "EZ Tgt %", format = colFormat(percent = TRUE, digits = 0), style = style_numeric(data$ez_tgt_share, "good", dark = dark)),
+      ez_rec_share = colDef(name = "EZ Rec %", format = colFormat(percent = TRUE, digits = 0), style = style_numeric(data$ez_rec_share, "good", dark = dark)),
       first_downs = colDef(name = "FD"),
       fd_share = colDef(name = "FD %", format = colFormat(percent = TRUE, digits = 0)),
-      total_epa = colDef(name = "EPA", format = colFormat(digits = 1), style = style_numeric(data$total_epa, "value")),
-      fp_g = colDef(name = "PPR/G", format = colFormat(digits = 1), style = style_numeric(data$fp_g, "value")),
-      total_fp = colDef(name = "PPR", format = colFormat(digits = 1), style = style_numeric(data$total_fp, "value"))
+      total_epa = colDef(name = "EPA", format = colFormat(digits = 1), style = style_numeric(data$total_epa, "value", dark = dark)),
+      fp_g = colDef(name = "PPR/G", format = colFormat(digits = 1), style = style_numeric(data$fp_g, "value", dark = dark)),
+      total_fp = colDef(name = "PPR", format = colFormat(digits = 1), style = style_numeric(data$total_fp, "value", dark = dark))
     )
   )
   
-  base_reactable(data, cols)
+  base_reactable(data, cols, dark = dark)
 }
 
-rb_table <- function(data) {
+rb_table <- function(data, dark = FALSE) {
   cols <- c(
     hidden_meta_cols(),
     list(
       rank = colDef(name = "Rk", minWidth = 48, filterable = FALSE),
-      player_name = colDef(name = "Running Back", align = "left", minWidth = 210, sticky = "left", cell = player_cell(data)),
-      team = colDef(name = "Team", minWidth = 84, cell = team_cell(data)),
+      player_name = colDef(name = "Running Back", align = "left", minWidth = 210, sticky = "left", cell = player_cell(data), style = zebra_style(dark)),
+      team = colDef(name = "Team", minWidth = 84, cell = team_cell(data), style = zebra_style(dark)),
       games_played = colDef(name = "G", minWidth = 46),
-      carries = colDef(name = "Car", style = style_numeric(data$carries, "good")),
+      carries = colDef(name = "Car", style = style_numeric(data$carries, "good", dark = dark)),
       rushing_yards = colDef(name = "Rush Yds", format = colFormat(separators = TRUE)),
-      ypc = colDef(name = "YPC", format = colFormat(digits = 1), style = style_numeric(data$ypc, "value")),
+      ypc = colDef(name = "YPC", format = colFormat(digits = 1), style = style_numeric(data$ypc, "value", dark = dark)),
       rushing_td = colDef(name = "Rush TD"),
-      carry_share = colDef(name = "Car %", format = colFormat(percent = TRUE, digits = 0), style = style_numeric(data$carry_share, "good")),
+      carry_share = colDef(name = "Car %", format = colFormat(percent = TRUE, digits = 0), style = style_numeric(data$carry_share, "good", dark = dark)),
       rz_carries = colDef(name = "RZ Car"),
-      rz_carry_share = colDef(name = "RZ Car %", format = colFormat(percent = TRUE, digits = 0), style = style_numeric(data$rz_carry_share, "good")),
+      rz_carry_share = colDef(name = "RZ Car %", format = colFormat(percent = TRUE, digits = 0), style = style_numeric(data$rz_carry_share, "good", dark = dark)),
       ez_carries = colDef(name = "EZ Car"),
-      ez_carry_share = colDef(name = "EZ Car %", format = colFormat(percent = TRUE, digits = 0), style = style_numeric(data$ez_carry_share, "good")),
+      ez_carry_share = colDef(name = "EZ Car %", format = colFormat(percent = TRUE, digits = 0), style = style_numeric(data$ez_carry_share, "good", dark = dark)),
       targets = colDef(name = "Tgt"),
       receptions = colDef(name = "Rec"),
       receiving_yards = colDef(name = "Rec Yds", format = colFormat(separators = TRUE)),
       receiving_td = colDef(name = "Rec TD"),
       rush_first_downs = colDef(name = "Rush FD"),
       rush_fd_pct = colDef(name = "FD %", format = colFormat(percent = TRUE, digits = 0)),
-      total_epa = colDef(name = "EPA", format = colFormat(digits = 1), style = style_numeric(data$total_epa, "value")),
-      fp_g = colDef(name = "PPR/G", format = colFormat(digits = 1), style = style_numeric(data$fp_g, "value")),
-      total_fp = colDef(name = "PPR", format = colFormat(digits = 1), style = style_numeric(data$total_fp, "value"))
+      total_epa = colDef(name = "EPA", format = colFormat(digits = 1), style = style_numeric(data$total_epa, "value", dark = dark)),
+      fp_g = colDef(name = "PPR/G", format = colFormat(digits = 1), style = style_numeric(data$fp_g, "value", dark = dark)),
+      total_fp = colDef(name = "PPR", format = colFormat(digits = 1), style = style_numeric(data$total_fp, "value", dark = dark))
     )
   )
-  base_reactable(data, cols)
+  base_reactable(data, cols, dark = dark)
 }
 
-qb_table <- function(data) {
+qb_table <- function(data, dark = FALSE) {
   cols <- c(
     hidden_meta_cols(),
     list(
       rank = colDef(name = "Rk", minWidth = 48, filterable = FALSE),
-      player_name = colDef(name = "Quarterback", align = "left", minWidth = 210, sticky = "left", cell = player_cell(data)),
-      team = colDef(name = "Team", minWidth = 84, cell = team_cell(data)),
+      player_name = colDef(name = "Quarterback", align = "left", minWidth = 210, sticky = "left", cell = player_cell(data), style = zebra_style(dark)),
+      team = colDef(name = "Team", minWidth = 84, cell = team_cell(data), style = zebra_style(dark)),
       games_played = colDef(name = "G", minWidth = 46),
       completions = colDef(name = "Cmp"),
-      attempts = colDef(name = "Att", style = style_numeric(data$attempts, "good")),
+      attempts = colDef(name = "Att", style = style_numeric(data$attempts, "good", dark = dark)),
       cmp_pct = colDef(name = "Cmp %", format = colFormat(percent = TRUE, digits = 1)),
-      passing_yards = colDef(name = "Pass Yds", format = colFormat(separators = TRUE), style = style_numeric(data$passing_yards, "good")),
+      passing_yards = colDef(name = "Pass Yds", format = colFormat(separators = TRUE), style = style_numeric(data$passing_yards, "good", dark = dark)),
       ypa = colDef(name = "YPA", format = colFormat(digits = 1)),
       adot = colDef(name = "ADOT", format = colFormat(digits = 1)),
       passing_td = colDef(name = "Pass TD"),
-      interceptions = colDef(name = "INT", style = style_numeric(data$interceptions, "bad")),
-      sacks = colDef(name = "Sck", style = style_numeric(data$sacks, "bad")),
-      cpoe = colDef(name = "CPOE", format = colFormat(digits = 1), style = style_numeric(data$cpoe, "value")),
+      interceptions = colDef(name = "INT", style = style_numeric(data$interceptions, "bad", dark = dark)),
+      sacks = colDef(name = "Sck", style = style_numeric(data$sacks, "bad", dark = dark)),
+      cpoe = colDef(name = "CPOE", format = colFormat(digits = 1), style = style_numeric(data$cpoe, "value", dark = dark)),
       carries = colDef(name = "Rush Att"),
       rushing_yards = colDef(name = "Rush Yds", format = colFormat(separators = TRUE)),
       rushing_td = colDef(name = "Rush TD"),
@@ -506,9 +583,9 @@ qb_table <- function(data) {
       rz_pass_td = colDef(name = "RZ TD"),
       ez_pass_att = colDef(name = "EZ Att"),
       ez_pass_td = colDef(name = "EZ TD"),
-      total_epa = colDef(name = "EPA", format = colFormat(digits = 1), style = style_numeric(data$total_epa, "value")),
-      fp_g = colDef(name = "FP/G", format = colFormat(digits = 1), style = style_numeric(data$fp_g, "value")),
-      total_fp = colDef(name = "FP", format = colFormat(digits = 1), style = style_numeric(data$total_fp, "value"))
+      total_epa = colDef(name = "EPA", format = colFormat(digits = 1), style = style_numeric(data$total_epa, "value", dark = dark)),
+      fp_g = colDef(name = "PPR/G", format = colFormat(digits = 1), style = style_numeric(data$fp_g, "value", dark = dark)),
+      total_fp = colDef(name = "PPR", format = colFormat(digits = 1), style = style_numeric(data$total_fp, "value", dark = dark))
     )
   )
   
@@ -519,7 +596,8 @@ qb_table <- function(data) {
       colGroup(name = "Passing", columns = c("completions", "attempts", "cmp_pct", "passing_yards", "ypa", "adot", "passing_td", "interceptions", "sacks", "cpoe")),
       colGroup(name = "Rushing", columns = c("carries", "rushing_yards", "rushing_td")),
       colGroup(name = "RZ / EZ passing", columns = c("rz_pass_att", "rz_pass_td", "ez_pass_att", "ez_pass_td"))
-    )
+    ),
+    dark = dark
   )
 }
 
@@ -575,8 +653,31 @@ ui <- fluidPage(
         border-color: #334155;
       }
       [data-bs-theme='dark'] .rt-table,
-      [data-bs-theme='dark'] .Reactable {
-        color: #e2e8f0;
+      [data-bs-theme='dark'] .Reactable,
+      [data-bs-theme='dark'] .reactable {
+        color: #f8fafc !important;
+        background-color: #0f172a !important;
+      }
+      [data-bs-theme='dark'] .rt-tbody .rt-tr:nth-child(odd) .rt-td {
+        background-color: #0f172a;
+        color: #f8fafc;
+      }
+      [data-bs-theme='dark'] .rt-tbody .rt-tr:nth-child(even) .rt-td {
+        background-color: #162033;
+        color: #f8fafc;
+      }
+      [data-bs-theme='dark'] .rt-pagination,
+      [data-bs-theme='dark'] .rt-search,
+      [data-bs-theme='dark'] .rt-th-filter {
+        background-color: #0f172a;
+        color: #f8fafc;
+      }
+      [data-bs-theme='dark'] .tab-content,
+      [data-bs-theme='dark'] .tabbable {
+        background-color: transparent;
+      }
+      [data-bs-theme='dark'] body {
+        background-color: #0b1220;
       }
     "))
   ),
@@ -584,7 +685,7 @@ ui <- fluidPage(
   div(
     class = "title-header-banner",
     tags$h2("Fantasy Sports Pack 2026 Player Stats Tool"),
-    tags$p(paste(week_label, "| Data: nflreadR | WR/TE/RB PPR | QB standard passing"))
+    tags$p(paste(week_label, "| Data: nflreadr | PPR scoring"))
   ),
   
   sidebarLayout(
@@ -594,7 +695,7 @@ ui <- fluidPage(
       div(
         style = "display: flex; justify-content: space-between; align-items: center;",
         p("Theme Toggle:", style = "margin: 0; font-weight: bold;"),
-        input_dark_mode()
+        input_dark_mode(id = "color_mode")
       ),
       hr(),
       selectInput("team", "Team", choices = c("All teams" = "ALL", all_teams), selected = "ALL"),
@@ -639,7 +740,7 @@ ui <- fluidPage(
       ),
       tags$p(
         style = "color:#64748b;font-size:12px;margin-top:12px;",
-        "Data: nflreadr / nflfastR. By Jake Mammen | X: @FantasySPack"
+        "By Jake Mammen | X: @FantasySPack"
       )
     )
   )
@@ -656,6 +757,10 @@ rerank <- function(df) {
 }
 
 server <- function(input, output, session) {
+  is_dark <- reactive({
+    identical(input$color_mode, "dark")
+  })
+  
   wr_f <- reactive({
     df <- filter_team(wr_stats, input$team)
     rerank(df[df$targets >= input$min_wr, , drop = FALSE])
@@ -673,10 +778,18 @@ server <- function(input, output, session) {
     rerank(df[df$attempts >= input$min_qb, , drop = FALSE])
   })
   
-  output$wr_table <- renderReactable(pass_catcher_table(wr_f(), "Receiver", te = FALSE))
-  output$te_table <- renderReactable(pass_catcher_table(te_f(), "Tight End", te = TRUE))
-  output$rb_table <- renderReactable(rb_table(rb_f()))
-  output$qb_table <- renderReactable(qb_table(qb_f()))
+  output$wr_table <- renderReactable({
+    pass_catcher_table(wr_f(), "Receiver", te = FALSE, dark = is_dark())
+  })
+  output$te_table <- renderReactable({
+    pass_catcher_table(te_f(), "Tight End", te = TRUE, dark = is_dark())
+  })
+  output$rb_table <- renderReactable({
+    rb_table(rb_f(), dark = is_dark())
+  })
+  output$qb_table <- renderReactable({
+    qb_table(qb_f(), dark = is_dark())
+  })
 }
 
 shinyApp(ui, server)
