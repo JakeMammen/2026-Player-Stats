@@ -1,0 +1,13 @@
+Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+.DS_Store
+rsconnect/
+*.html
+packrat/lib*/
+packrat/src/
+renv/library/
+renv/staging/
+.Renviron
+.Rprofile.user
