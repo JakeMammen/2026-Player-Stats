@@ -230,7 +230,7 @@ latest_roster <- rosters_week %>%
   group_by(gsis_id) %>%
   slice_max(week, n = 1, with_ties = FALSE) %>%
   ungroup() %>%
-  select(player_id = gsis_id, player_name = full_name, team, position, headshot_url)
+  select(player_id = gsis_id, player_name = full_name, team, position, headshot_url, pfr_id)
 
 full_pbp <- load_pbp(seasons = season) %>%
   filter(season_type == "REG")
@@ -248,6 +248,29 @@ team_pass <- full_pbp %>%
     team_ez_targets = sum(yardline_100 <= EZ_LINE, na.rm = TRUE),
     .groups = "drop"
   )
+
+# PFR snap counts are game-level and keyed by pfr_player_id, not GSIS.
+snap_week <- tryCatch(
+  load_snap_counts(seasons = season),
+  error = function(e) {
+    warning("load_snap_counts() failed: ", conditionMessage(e))
+    tibble()
+  }
+)
+
+if (nrow(snap_week) > 0) {
+  snap_season <- snap_week %>%
+    filter(game_type == "REG" | is.na(game_type)) %>%
+    mutate(off_pct = if_else(offense_pct > 1.5, offense_pct / 100, offense_pct)) %>%
+    group_by(pfr_player_id) %>%
+    summarise(
+      offense_snaps = sum(offense_snaps, na.rm = TRUE),
+      offense_pct = weighted.mean(off_pct, w = pmax(offense_snaps, 1e-6), na.rm = TRUE),
+      .groups = "drop"
+    )
+} else {
+  snap_season <- tibble(pfr_player_id = character(), offense_snaps = numeric(), offense_pct = numeric())
+}
 
 team_rush <- full_pbp %>%
   filter(rush_attempt == 1, !is.na(rusher_id), down %in% 1:4) %>%
@@ -371,6 +394,7 @@ skill_stats <- official_all %>%
   left_join(pbp_recv, by = "player_id") %>%
   left_join(pbp_rush, by = "player_id") %>%
   attach_identity() %>%
+  left_join(snap_season, by = c("pfr_id" = "pfr_player_id")) %>%
   left_join(team_pass, by = c("team" = "posteam")) %>%
   left_join(team_rush, by = c("team" = "posteam")) %>%
   mutate(
@@ -396,6 +420,8 @@ skill_stats <- official_all %>%
     rz_carry_share = safe_div(rz_carries, team_rz_carries),
     ez_carry_share = safe_div(ez_carries, team_ez_carries),
     total_td = replace_na(receiving_td, 0) + replace_na(rushing_td, 0),
+    offense_snaps = replace_na(offense_snaps, 0),
+    offense_pct = replace_na(offense_pct, 0),
     total_fp = coalesce(official_ppr, 0),
     fp_g = safe_div(total_fp, games_played)
   ) %>%
@@ -407,7 +433,7 @@ wr_stats <- skill_stats %>%
   mutate(rank = row_number()) %>%
   select(
     rank, player_id, player_name, headshot_url, team, team_wordmark, team_logo_espn,
-    games_played, targets, receptions, receiving_yards, yards_after_catch, air_yards,
+    games_played, offense_snaps, offense_pct, targets, receptions, receiving_yards, yards_after_catch, air_yards,
     target_share, receiving_td, rushing_yards, rushing_td, fumbles,
     rz_targets, rz_rec, rz_tgt_share, rz_rec_share,
     ez_targets, ez_rec, ez_tgt_share, ez_rec_share,
@@ -420,7 +446,7 @@ te_stats <- skill_stats %>%
   mutate(rank = row_number()) %>%
   select(
     rank, player_id, player_name, headshot_url, team, team_wordmark, team_logo_espn,
-    games_played, targets, receptions, receiving_yards, yards_after_catch, air_yards,
+    games_played, offense_snaps, offense_pct, targets, receptions, receiving_yards, yards_after_catch, air_yards,
     target_share, total_td, carries, rushing_yards, fumbles,
     rz_targets, rz_rec, rz_tgt_share, rz_rec_share,
     ez_targets, ez_rec, ez_tgt_share, ez_rec_share,
@@ -433,7 +459,7 @@ rb_stats <- skill_stats %>%
   mutate(rank = row_number()) %>%
   select(
     rank, player_id, player_name, headshot_url, team, team_wordmark, team_logo_espn,
-    games_played, carries, rushing_yards, ypc, rushing_td, carry_share,
+    games_played, offense_snaps, offense_pct, carries, rushing_yards, ypc, rushing_td, carry_share,
     rz_carries, rz_carry_share, ez_carries, ez_carry_share,
     targets, receptions, receiving_yards, receiving_td,
     rush_first_downs, rush_fd_pct, total_epa, fp_g, total_fp
@@ -443,6 +469,7 @@ qb_stats <- official_all %>%
   left_join(pbp_pass, by = "player_id") %>%
   left_join(pbp_rush, by = "player_id") %>%
   attach_identity() %>%
+  left_join(snap_season, by = c("pfr_id" = "pfr_player_id")) %>%
   mutate(
     attempts = coalesce(attempts, pbp_attempts, 0),
     completions = replace_na(completions, 0),
@@ -456,14 +483,16 @@ qb_stats <- official_all %>%
     cpoe = replace_na(cpoe, 0),
     total_epa = coalesce(pass_epa_pbp, passing_epa, 0) + coalesce(rush_epa_pbp, rushing_epa, 0),
     total_fp = coalesce(official_ppr, official_fp, 0),
-    fp_g = safe_div(total_fp, games_played)
+    fp_g = safe_div(total_fp, games_played),
+    offense_snaps = replace_na(offense_snaps, 0),
+    offense_pct = replace_na(offense_pct, 0)
   ) %>%
   filter(position == "QB", attempts > 0 | rushing_yards != 0) %>%
   arrange(desc(total_fp), desc(attempts)) %>%
   mutate(rank = row_number()) %>%
   select(
     rank, player_id, player_name, headshot_url, team, team_wordmark, team_logo_espn,
-    games_played, completions, attempts, cmp_pct, passing_yards, ypa, adot,
+    games_played, offense_snaps, offense_pct, completions, attempts, cmp_pct, passing_yards, ypa, adot,
     passing_td, interceptions, sacks, cpoe,
     carries, rushing_yards, rushing_td,
     rz_pass_att, rz_pass_td, ez_pass_att, ez_pass_td,
@@ -498,6 +527,8 @@ pass_catcher_table <- function(data, player_label = "Receiver", te = FALSE, dark
       player_name = colDef(name = player_label, align = "left", minWidth = 210, sticky = "left", cell = player_cell(data), style = zebra_style(dark)),
       team = colDef(name = "Team", minWidth = 84, cell = team_cell(data), style = zebra_style(dark)),
       games_played = colDef(name = "G", minWidth = 46),
+      offense_snaps = colDef(name = "Off Snaps", style = style_numeric(data$offense_snaps, "good", dark = dark)),
+      offense_pct = colDef(name = "Off Snap %", format = colFormat(percent = TRUE, digits = 0), style = style_numeric(data$offense_pct, "good", dark = dark)),
       targets = colDef(name = "Tgt", style = style_numeric(data$targets, "good", dark = dark)),
       receptions = colDef(name = "Rec"),
       receiving_yards = colDef(name = "Rec Yds", format = colFormat(separators = TRUE)),
@@ -535,6 +566,8 @@ rb_table <- function(data, dark = FALSE) {
       player_name = colDef(name = "Running Back", align = "left", minWidth = 210, sticky = "left", cell = player_cell(data), style = zebra_style(dark)),
       team = colDef(name = "Team", minWidth = 84, cell = team_cell(data), style = zebra_style(dark)),
       games_played = colDef(name = "G", minWidth = 46),
+      offense_snaps = colDef(name = "Off Snaps", style = style_numeric(data$offense_snaps, "good", dark = dark)),
+      offense_pct = colDef(name = "Off Snap %", format = colFormat(percent = TRUE, digits = 0), style = style_numeric(data$offense_pct, "good", dark = dark)),
       carries = colDef(name = "Car", style = style_numeric(data$carries, "good", dark = dark)),
       rushing_yards = colDef(name = "Rush Yds", format = colFormat(separators = TRUE)),
       ypc = colDef(name = "YPC", format = colFormat(digits = 1), style = style_numeric(data$ypc, "value", dark = dark)),
@@ -566,6 +599,8 @@ qb_table <- function(data, dark = FALSE) {
       player_name = colDef(name = "Quarterback", align = "left", minWidth = 210, sticky = "left", cell = player_cell(data), style = zebra_style(dark)),
       team = colDef(name = "Team", minWidth = 84, cell = team_cell(data), style = zebra_style(dark)),
       games_played = colDef(name = "G", minWidth = 46),
+      offense_snaps = colDef(name = "Off Snaps", style = style_numeric(data$offense_snaps, "good", dark = dark)),
+      offense_pct = colDef(name = "Off Snap %", format = colFormat(percent = TRUE, digits = 0), style = style_numeric(data$offense_pct, "good", dark = dark)),
       completions = colDef(name = "Cmp"),
       attempts = colDef(name = "Att", style = style_numeric(data$attempts, "good", dark = dark)),
       cmp_pct = colDef(name = "Cmp %", format = colFormat(percent = TRUE, digits = 1)),
