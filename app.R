@@ -1,14 +1,14 @@
-# =============================================================================
-# 2026 Position Stats — WR / TE / RB / QB
-# One Shiny app, four reactive tables
-#
-# Data: nflreadr (PBP built by nflfastR + official player stats)
-# RZ = inside the 25    EZ = inside the 5
-#
-# Install if needed:
-# install.packages(c("nflreadr", "dplyr", "tidyr", "shiny", "bslib",
-#                    "reactable", "htmltools", "scales", "rsconnect"))
-# =============================================================================
+  # =============================================================================
+  # 2026 Position Stats — WR / TE / RB / QB
+  # One Shiny app, four reactive tables
+  #
+  # Data: nflreadr (PBP built by nflfastR + official player stats)
+  # RZ = inside the 25    EZ = inside the 5
+  #
+  # Install if needed:
+  # install.packages(c("nflreadr", "dplyr", "tidyr", "shiny", "bslib",
+  #                    "reactable", "htmltools", "scales", "ggplot2", "rsconnect"))
+  # =============================================================================
 
 library(nflreadr)
 library(dplyr)
@@ -18,6 +18,11 @@ library(bslib)
 library(reactable)
 library(htmltools)
 library(scales)
+library(ggplot2)
+library(rsconnect)
+library(cowplot)
+library(magick)
+library(png)
 
 SEASON <- 2026
 RZ_LINE <- 25
@@ -259,10 +264,20 @@ snap_week <- tryCatch(
 )
 
 if (nrow(snap_week) > 0) {
-  snap_season <- snap_week %>%
+  snap_clean <- snap_week %>%
     filter(game_type == "REG" | is.na(game_type)) %>%
-    mutate(off_pct = if_else(offense_pct > 1.5, offense_pct / 100, offense_pct)) %>%
+    mutate(off_pct = if_else(offense_pct > 1.5, offense_pct / 100, offense_pct))
+  
+  snap_season <- snap_clean %>%
     group_by(pfr_player_id) %>%
+    summarise(
+      offense_snaps = sum(offense_snaps, na.rm = TRUE),
+      offense_pct = weighted.mean(off_pct, w = pmax(offense_snaps, 1e-6), na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  snap_team <- snap_clean %>%
+    group_by(pfr_player_id, player, team, position) %>%
     summarise(
       offense_snaps = sum(offense_snaps, na.rm = TRUE),
       offense_pct = weighted.mean(off_pct, w = pmax(offense_snaps, 1e-6), na.rm = TRUE),
@@ -270,6 +285,10 @@ if (nrow(snap_week) > 0) {
     )
 } else {
   snap_season <- tibble(pfr_player_id = character(), offense_snaps = numeric(), offense_pct = numeric())
+  snap_team <- tibble(
+    pfr_player_id = character(), player = character(), team = character(),
+    position = character(), offense_snaps = numeric(), offense_pct = numeric()
+  )
 }
 
 team_rush <- full_pbp %>%
@@ -282,8 +301,300 @@ team_rush <- full_pbp %>%
     .groups = "drop"
   )
 
-team_meta <- load_teams() %>%
-  select(team_abbr, team_wordmark, team_logo_espn)
+team_meta <- load_teams()
+team_meta <- team_meta %>%
+  select(any_of(c(
+    "team_abbr", "team_wordmark", "team_logo_espn",
+    "team_color", "team_color2", "team_color3", "team_color4"
+  )))
+
+
+# Resolve a theme-specific logo that works locally and on shinyapps.io.
+# Place both files in ./logo (or ./www) next to the app script:
+#   FSP_Logo_Dark.png  -> dark mode  (#0b1220)
+#   FSP_Logo_White.png -> light mode (#ffffff)
+resolve_logo_path <- function(dark = FALSE) {
+  filename <- if (isTRUE(dark)) "FSP_Logo_Dark.png" else "FSP_Logo_White.png"
+  dirs <- c(
+    "logo",
+    "www",
+    file.path("www", "logo")
+  )
+  candidates <- file.path(dirs, filename)
+  fallback <- file.path(dirs, c("FSP_logo.png", "FSP_Logo.png"))
+  hit <- candidates[file.exists(candidates)]
+  if (length(hit)) return(hit[[1]])
+  hit_fb <- fallback[file.exists(fallback)]
+  if (length(hit_fb)) return(hit_fb[[1]])
+  candidates[[1]]
+}
+
+team_fill_colors <- function(team_abbr, n) {
+  n <- max(1L, as.integer(n))
+  row <- team_meta[team_meta$team_abbr == team_abbr, , drop = FALSE]
+  cols <- character()
+  for (nm in c("team_color", "team_color2", "team_color3", "team_color4")) {
+    if (nm %in% names(row) && nrow(row) && !is.na(row[[nm]][1]) && nzchar(row[[nm]][1])) {
+      cols <- c(cols, row[[nm]][1])
+    }
+  }
+  cols <- unique(cols)
+  if (length(cols) == 0) cols <- c("#1d4ed8", "#93c5fd")
+  if (length(cols) == 1) cols <- c(cols, "#f8fafc")
+  grDevices::colorRampPalette(cols)(n)
+}
+
+player_last <- function(x) {
+  suffix_tokens <- c("JR", "SR", "II", "III", "IV", "V", "VI")
+  particle_tokens <- c("ST", "SAINT")
+  
+  vapply(as.character(x), function(nm) {
+    parts <- unlist(strsplit(trimws(nm), "\\s+"))
+    parts <- parts[nzchar(parts)]
+    if (!length(parts)) return(nm)
+    
+    norm <- toupper(gsub("[.,]", "", parts))
+    n <- length(parts)
+    has_suffix <- n >= 2 && norm[n] %in% suffix_tokens
+    base_i <- if (has_suffix) n - 1L else n
+    
+    if (base_i >= 2 && norm[base_i - 1L] %in% particle_tokens) {
+      paste(parts[(base_i - 1L):n], collapse = " ")
+    } else if (has_suffix) {
+      paste(parts[base_i:n], collapse = " ")
+    } else {
+      parts[n]
+    }
+  }, character(1), USE.NAMES = FALSE)
+}
+
+share_pie_plot <- function(data, team_abbr, positions, dark = FALSE,
+                           title_metric = "share", subtitle = "", empty_noun = "data") {
+  week_bit <- if (is.finite(max_week)) paste("Week", max_week) else paste(season)
+  bg <- if (dark) "#0b1220" else "#ffffff"
+  fg <- if (dark) "#f8fafc" else "#0f172a"
+  
+  empty_plot <- function(msg) {
+    ggplot() +
+      annotate("text", x = 0.5, y = 0.5, label = msg, color = fg, size = 5) +
+      xlim(0, 1) + ylim(0, 1) +
+      theme_void() +
+      theme(plot.background = element_rect(fill = bg, color = NA))
+  }
+  
+  if (is.null(team_abbr) || identical(team_abbr, "ALL")) {
+    return(empty_plot("Select a team in the sidebar to draw the chart."))
+  }
+  if (length(positions) == 0) {
+    return(empty_plot("Select at least one position."))
+  }
+  
+  pos_want <- unique(unlist(list(
+    QB = "QB",
+    RB = c("RB", "FB", "HB"),
+    WR = "WR",
+    TE = "TE"
+  )[positions], use.names = FALSE))
+  
+  pie_df <- data %>%
+    filter(team == team_abbr, position %in% pos_want, value > 0) %>%
+    arrange(desc(value))
+  
+  if (nrow(pie_df) == 0) {
+    return(empty_plot(paste("No", empty_noun, "for", team_abbr)))
+  }
+  
+  pie_df <- pie_df %>%
+    mutate(
+      player_lab = paste0(player, " (", position, ")"),
+      slice_lab = paste0(player_last(player), "\n", round(pct * 100), "%"),
+      player_lab = factor(player_lab, levels = unique(player_lab)),
+      fraction = value / sum(value),
+      ymax = cumsum(fraction),
+      ymin = lag(ymax, default = 0),
+      mid = (ymin + ymax) / 2,
+      outside = fraction < 0.08
+    )
+  
+  spread_mids <- function(mids, min_gap = 0.045) {
+    if (length(mids) <= 1) return(mids)
+    o <- order(mids)
+    y <- mids[o]
+    for (i in seq_along(y)[-1]) {
+      if (y[i] - y[i - 1] < min_gap) y[i] <- y[i - 1] + min_gap
+    }
+    overflow <- y[length(y)] - 0.98
+    if (overflow > 0) y <- y - overflow
+    for (i in seq_along(y)[-1]) {
+      if (y[i] - y[i - 1] < min_gap) y[i] <- y[i - 1] + min_gap
+    }
+    out <- mids
+    out[o] <- pmin(pmax(y, 0.02), 0.98)
+    out
+  }
+  
+  pie_df$label_at <- pie_df$mid
+  if (any(pie_df$outside)) {
+    pie_df$label_at[pie_df$outside] <- spread_mids(pie_df$mid[pie_df$outside])
+  }
+  
+  pie_df <- pie_df %>%
+    mutate(
+      # Push the text off the leader along the arc (same direction already used to unstack labels).
+      text_at = if_else(
+        outside,
+        label_at + sign(label_at - mid + 1e-4) * 0.022,
+        mid
+      ),
+      slice_lab = paste0(player_last(player), "\n", round(pct * 100), "%")
+    )
+  
+  fills <- team_fill_colors(team_abbr, nrow(pie_df))
+  names(fills) <- levels(pie_df$player_lab)
+  
+  outside_df <- pie_df[pie_df$outside, , drop = FALSE]
+  inside_df  <- pie_df[!pie_df$outside, , drop = FALSE]
+  
+  ggplot(pie_df) +
+    geom_rect(
+      aes(xmin = 0.18, xmax = 1.05, ymin = ymin, ymax = ymax, fill = player_lab),
+      color = bg,
+      linewidth = 0.7
+    ) +
+    geom_segment(
+      data = outside_df,
+      aes(x = 1.05, xend = 1.20, y = mid, yend = label_at),
+      color = fg,
+      linewidth = 0.4
+    ) +
+    geom_segment(
+      data = outside_df,
+      aes(x = 1.20, xend = 1.32, y = label_at, yend = label_at),
+      color = fg,
+      linewidth = 0.4
+    ) +
+    geom_segment(
+      data = outside_df,
+      aes(x = 1.32, xend = 1.40, y = label_at, yend = text_at),
+      color = fg,
+      linewidth = 0.4
+    ) +
+    geom_text(
+      data = inside_df,
+      aes(x = 0.62, y = mid, label = slice_lab),
+      color = "#ffffff",
+      size = 5.1,
+      fontface = "bold",
+      lineheight = 0.95
+    ) +
+    geom_text(
+      data = outside_df,
+      aes(x = 1.48, y = text_at, label = slice_lab),
+      color = fg,
+      size = 4.4,
+      fontface = "bold",
+      lineheight = 0.92,
+      hjust = 0,
+      vjust = 0.5
+    ) +
+    scale_fill_manual(values = fills) +
+    coord_polar(theta = "y") +
+    xlim(0.05, 1.95) +
+    labs(
+      title = paste0(team_abbr, " ", title_metric, " — ", week_bit),
+      subtitle = subtitle,
+      fill = NULL
+    ) +
+    theme_void(base_family = "sans") +
+    theme(
+      plot.background = element_rect(fill = bg, color = NA),
+      panel.background = element_rect(fill = bg, color = NA),
+      plot.title = element_text(color = fg, face = "bold", size = 20, hjust = 0.5),
+      plot.subtitle = element_text(color = fg, size = 12, hjust = 0.5, margin = margin(b = 8)),
+      legend.position = "none",
+      plot.margin = margin(8, 8, 8, 8)
+    )
+}
+
+# Bake the logo into the ggplot so on-screen and downloaded PNGs both include it.
+add_plot_logo <- function(p, dark = FALSE) {
+  bg <- if (isTRUE(dark)) "#0b1220" else "#ffffff"
+  logo_file <- resolve_logo_path(dark)
+  
+  if (is.null(logo_file) || !nzchar(logo_file) || !file.exists(logo_file)) {
+    warning("Logo file not found at: ", logo_file)
+    return(p)
+  }
+  
+  if (requireNamespace("cowplot", quietly = TRUE) &&
+      requireNamespace("magick", quietly = TRUE)) {
+    return(
+      cowplot::ggdraw(p) +
+        theme(
+          plot.background = element_rect(fill = bg, color = NA),
+          panel.background = element_rect(fill = bg, color = NA)
+        ) +
+        cowplot::draw_image(
+          logo_file,
+          x = 0.985,
+          y = 0.02,
+          width = 0.12,
+          height = 0.12,
+          hjust = 1,
+          vjust = 0,
+          halign = 1,
+          valign = 0
+        )
+    )
+  }
+  
+  logo_img <- tryCatch(png::readPNG(logo_file), error = function(e) NULL)
+  if (is.null(logo_img)) {
+    warning("Could not read logo PNG: ", logo_file)
+    return(p)
+  }
+  
+  logo_grob <- grid::rasterGrob(logo_img, interpolate = TRUE)
+  
+  if (requireNamespace("cowplot", quietly = TRUE)) {
+    return(
+      cowplot::ggdraw(p) +
+        theme(
+          plot.background = element_rect(fill = bg, color = NA),
+          panel.background = element_rect(fill = bg, color = NA)
+        ) +
+        cowplot::draw_grob(
+          logo_grob,
+          x = 0.985,
+          y = 0.02,
+          width = 0.12,
+          height = 0.12,
+          hjust = 1,
+          vjust = 0
+        )
+    )
+  }
+  
+  p
+}
+
+draw_share_pie <- function(p, dark = FALSE) {
+  print(add_plot_logo(p, dark = dark))
+}
+
+snap_pie_plot <- function(team_abbr, positions, dark = FALSE) {
+  share_pie_plot(
+    snap_team %>% transmute(player, team, position, value = offense_snaps, pct = offense_pct),
+    team_abbr, positions, dark,
+    title_metric = "offensive snap share",
+    subtitle = "Slice size = offensive snap share.",
+    empty_noun = "offensive snap data"
+  )
+}
+
+draw_snap_pie <- function(team_abbr, positions, dark = FALSE) {
+  draw_share_pie(snap_pie_plot(team_abbr, positions, dark = dark), dark = dark)
+}
 
 # ---------------------------------------------------------------------------
 # Official season rollups
@@ -426,6 +737,30 @@ skill_stats <- official_all %>%
     fp_g = safe_div(total_fp, games_played)
   ) %>%
   filter(!is.na(player_name))
+
+tgt_team <- skill_stats %>%
+  filter(!is.na(team), replace_na(targets, 0) > 0) %>%
+  transmute(
+    player = player_name,
+    team,
+    position,
+    value = targets,
+    pct = target_share
+  )
+
+tgt_pie_plot <- function(team_abbr, positions, dark = FALSE) {
+  share_pie_plot(
+    tgt_team,
+    team_abbr, positions, dark,
+    title_metric = "target share",
+    subtitle = "Slice size = target share",
+    empty_noun = "target data"
+  )
+}
+
+draw_tgt_pie <- function(team_abbr, positions, dark = FALSE) {
+  draw_share_pie(tgt_pie_plot(team_abbr, positions, dark = dark), dark = dark)
+}
 
 wr_stats <- skill_stats %>%
   filter(position == "WR", targets > 0 | receiving_yards > 0 | rushing_yards > 0) %>%
@@ -708,11 +1043,29 @@ ui <- fluidPage(
         color: #f8fafc;
       }
       [data-bs-theme='dark'] .tab-content,
-      [data-bs-theme='dark'] .tabbable {
-        background-color: transparent;
+      [data-bs-theme='dark'] .tabbable,
+      [data-bs-theme='dark'] .tab-pane,
+      [data-bs-theme='dark'] .main-content,
+      [data-bs-theme='dark'] .col-sm-9,
+      [data-bs-theme='dark'] .col-lg-9,
+      [data-bs-theme='dark'] .shiny-plot-output,
+      [data-bs-theme='dark'] .shiny-plot-output img {
+        background-color: #0b1220 !important;
       }
-      [data-bs-theme='dark'] body {
-        background-color: #0b1220;
+      [data-bs-theme='dark'] body,
+      [data-bs-theme='dark'] .container-fluid {
+        background-color: #0b1220 !important;
+      }
+      [data-bs-theme='dark'] .nav-tabs {
+        border-bottom-color: #334155;
+      }
+      [data-bs-theme='dark'] .nav-tabs .nav-link {
+        color: #cbd5e1;
+      }
+      [data-bs-theme='dark'] .nav-tabs .nav-link.active {
+        background-color: #1e293b;
+        color: #f8fafc;
+        border-color: #334155 #334155 #0b1220;
       }
     "))
   ),
@@ -762,7 +1115,30 @@ ui <- fluidPage(
           min = 0, max = slider_max(qb_stats$attempts, 10), value = 10, step = 1
         )
       ),
-      helpText("RZ = inside the 25. EZ = inside the 5. WR/TE Tgt % = player zone targets / team zone targets. Rec % = zone receptions / zone targets. RB Car % = player zone carries / team zone carries.")
+      conditionalPanel(
+        condition = "input.pos_tab == 'Snap Share' || input.pos_tab == 'Target Share'",
+        checkboxGroupInput(
+          "pie_pos",
+          "Positions",
+          choices = c("QB", "RB", "WR", "TE"),
+          selected = c("QB", "RB", "WR", "TE"),
+          inline = TRUE
+        )
+      ),
+      conditionalPanel(
+        condition = "input.pos_tab == 'Snap Share'",
+        downloadButton("snap_download", "Download plot"),
+        helpText("Pick one team. Slice size is offensive snap share.")
+      ),
+      conditionalPanel(
+        condition = "input.pos_tab == 'Target Share'",
+        downloadButton("tgt_download", "Download plot"),
+        helpText("Pick one team. Slice size is target share.")
+      ),
+      conditionalPanel(
+        condition = "input.pos_tab != 'Snap Share' && input.pos_tab != 'Target Share'",
+        helpText("RZ = inside the 25. EZ = inside the 5. WR/TE Tgt % = player zone targets / team zone targets. Rec % = zone receptions / zone targets. RB Car % = player zone carries / team zone carries.")
+      )
     ),
     mainPanel(
       width = 9,
@@ -771,7 +1147,17 @@ ui <- fluidPage(
         tabPanel("WR", reactableOutput("wr_table")),
         tabPanel("TE", reactableOutput("te_table")),
         tabPanel("RB", reactableOutput("rb_table")),
-        tabPanel("QB", reactableOutput("qb_table"))
+        tabPanel("QB", reactableOutput("qb_table")),
+        tabPanel(
+          "Snap Share",
+          br(),
+          plotOutput("snap_pie", height = "760px")
+        ),
+        tabPanel(
+          "Target Share",
+          br(),
+          plotOutput("tgt_pie", height = "760px")
+        )
       ),
       tags$p(
         style = "color:#64748b;font-size:12px;margin-top:12px;",
@@ -825,6 +1211,40 @@ server <- function(input, output, session) {
   output$qb_table <- renderReactable({
     qb_table(qb_f(), dark = is_dark())
   })
+  
+  output$snap_pie <- renderPlot({
+    draw_snap_pie(input$team, input$pie_pos, dark = is_dark())
+  }, bg = "transparent")
+  
+  output$tgt_pie <- renderPlot({
+    draw_tgt_pie(input$team, input$pie_pos, dark = is_dark())
+  }, bg = "transparent")
+  
+  pie_filename <- function(kind) {
+    week_bit <- if (is.finite(max_week)) paste0("week", max_week) else paste0(season)
+    team_bit <- if (identical(input$team, "ALL")) "team" else input$team
+    paste0(team_bit, "_", kind, "_", week_bit, ".png")
+  }
+  
+  output$snap_download <- downloadHandler(
+    filename = function() pie_filename("snap_share"),
+    content = function(file) {
+      bg_col <- if (is_dark()) "#0b1220" else "#ffffff"
+      grDevices::png(file, width = 1400, height = 1100, res = 140, bg = bg_col)
+      draw_snap_pie(input$team, input$pie_pos, dark = is_dark())
+      grDevices::dev.off()
+    }
+  )
+  
+  output$tgt_download <- downloadHandler(
+    filename = function() pie_filename("target_share"),
+    content = function(file) {
+      bg_col <- if (is_dark()) "#0b1220" else "#ffffff"
+      grDevices::png(file, width = 1400, height = 1100, res = 140, bg = bg_col)
+      draw_tgt_pie(input$team, input$pie_pos, dark = is_dark())
+      grDevices::dev.off()
+    }
+  )
 }
 
 shinyApp(ui, server)
