@@ -1,14 +1,19 @@
-  # =============================================================================
-  # 2026 Position Stats — WR / TE / RB / QB
-  # One Shiny app, four reactive tables
-  #
-  # Data: nflreadr (PBP built by nflfastR + official player stats)
-  # RZ = inside the 25    EZ = inside the 5
-  #
-  # Install if needed:
-  # install.packages(c("nflreadr", "dplyr", "tidyr", "shiny", "bslib",
-  #                    "reactable", "htmltools", "scales", "ggplot2", "rsconnect"))
-  # =============================================================================
+# =============================================================================
+# 2026 Position Stats — WR / TE / RB / QB
+# One Shiny app, four reactive tables + snap / target share charts
+#
+# Data: nflreadr (PBP built by nflfastR + official player stats)
+# RZ = inside the 25    EZ = inside the 5
+#
+# Counting stats: official weekly box scores
+# Usage rates / zone opportunity: play-by-play, joined on player-week-team
+# so midseason team changes do not dilute or inflate shares.
+#
+# Install if needed:
+# install.packages(c("nflreadr", "dplyr", "tidyr", "shiny", "bslib",
+#                    "reactable", "htmltools", "scales", "ggplot2",
+#                    "cowplot", "magick", "png"))
+# =============================================================================
 
 library(nflreadr)
 library(dplyr)
@@ -19,7 +24,6 @@ library(reactable)
 library(htmltools)
 library(scales)
 library(ggplot2)
-library(rsconnect)
 library(cowplot)
 library(magick)
 library(png)
@@ -31,9 +35,26 @@ EZ_LINE <- 5
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
 safe_div <- function(num, den) {
   ifelse(!is.na(den) & den > 0, num / den, 0)
+}
+
+last_non_na <- function(x) {
+  x <- x[!is.na(x) & !(is.character(x) & !nzchar(x))]
+  if (!length(x)) {
+    return(if (is.character(x)) NA_character_ else NA)
+  }
+  x[[length(x)]]
+}
+
+safe_load <- function(expr, empty, label) {
+  tryCatch(
+    expr,
+    error = function(e) {
+      warning(label, " failed: ", conditionMessage(e))
+      empty
+    }
+  )
 }
 
 color_scale <- function(x, palette = "good", dark = FALSE) {
@@ -101,8 +122,6 @@ team_cell <- function(data) {
   }
 }
 
-# Reactable's default td background is white and beats theme$backgroundColor.
-# Paint every cell so uncolored columns stay readable in dark mode.
 zebra_style <- function(dark = FALSE) {
   function(value, index) {
     odd <- as.integer(index) %% 2L == 1L
@@ -219,107 +238,173 @@ hidden_meta_cols <- function() {
   )
 }
 
+modal_team <- function(x) {
+  x <- x[!is.na(x) & nzchar(x)]
+  if (!length(x)) return(NA_character_)
+  names(sort(table(x), decreasing = TRUE))[1]
+}
+
 # ---------------------------------------------------------------------------
 # Load data once
 # ---------------------------------------------------------------------------
-
 season <- if (length(SEASON) == 1 && SEASON >= 1999) SEASON else most_recent_season()
 
-player_week <- load_player_stats(seasons = season, summary_level = "week") %>%
-  filter(season_type == "REG")
+player_week <- safe_load(
+  load_player_stats(seasons = season, summary_level = "week") %>%
+    filter(season_type == "REG"),
+  tibble(),
+  "load_player_stats()"
+)
 
-rosters_week <- load_rosters_weekly(seasons = season) %>%
-  filter(!is.na(gsis_id), position %in% c("WR", "TE", "RB", "QB", "FB", "HB"))
+rosters_week <- safe_load(
+  {
+    rw <- load_rosters_weekly(seasons = season) %>%
+      filter(!is.na(gsis_id), position %in% c("WR", "TE", "RB", "QB", "FB", "HB"))
+    if ("game_type" %in% names(rw)) {
+      rw <- filter(rw, game_type == "REG" | is.na(game_type))
+    }
+    rw
+  },
+  tibble(),
+  "load_rosters_weekly()"
+)
 
-latest_roster <- rosters_week %>%
-  group_by(gsis_id) %>%
-  slice_max(week, n = 1, with_ties = FALSE) %>%
-  ungroup() %>%
-  select(player_id = gsis_id, player_name = full_name, team, position, headshot_url, pfr_id)
-
-full_pbp <- load_pbp(seasons = season) %>%
-  filter(season_type == "REG")
-
-max_week <- suppressWarnings(max(c(full_pbp$week, player_week$week), na.rm = TRUE))
-if (!is.finite(max_week)) max_week <- NA_integer_
-week_label <- if (is.finite(max_week)) paste("Through Week", max_week) else paste(season, "season")
-
-team_pass <- full_pbp %>%
-  filter(pass_attempt == 1, !is.na(receiver_id), down %in% 1:4) %>%
-  group_by(posteam) %>%
-  summarise(
-    team_targets = n(),
-    team_rz_targets = sum(yardline_100 <= RZ_LINE, na.rm = TRUE),
-    team_ez_targets = sum(yardline_100 <= EZ_LINE, na.rm = TRUE),
-    .groups = "drop"
+latest_roster <- if (nrow(rosters_week) > 0 && "week" %in% names(rosters_week)) {
+  rosters_week %>%
+    arrange(week) %>%
+    group_by(gsis_id) %>%
+    slice_max(week, n = 1, with_ties = FALSE) %>%
+    ungroup() %>%
+    select(player_id = gsis_id, player_name = full_name, team, position, headshot_url, pfr_id)
+} else {
+  tibble(
+    player_id = character(), player_name = character(), team = character(),
+    position = character(), headshot_url = character(), pfr_id = character()
   )
+}
 
-# PFR snap counts are game-level and keyed by pfr_player_id, not GSIS.
-snap_week <- tryCatch(
+roster_week_thin <- if (nrow(rosters_week) > 0 && "week" %in% names(rosters_week)) {
+  rosters_week %>%
+    select(
+      player_id = gsis_id, week, roster_name = full_name,
+      roster_team = team, roster_position = position,
+      roster_headshot = headshot_url, pfr_id
+    ) %>%
+    distinct(player_id, week, .keep_all = TRUE)
+} else {
+  tibble(
+    player_id = character(), week = integer(), roster_name = character(),
+    roster_team = character(), roster_position = character(),
+    roster_headshot = character(), pfr_id = character()
+  )
+}
+
+full_pbp <- safe_load(
+  load_pbp(seasons = season) %>%
+    filter(season_type == "REG"),
+  tibble(),
+  "load_pbp()"
+)
+
+max_week <- suppressWarnings(max(c(
+  if ("week" %in% names(full_pbp)) full_pbp$week else NA_integer_,
+  if ("week" %in% names(player_week)) player_week$week else NA_integer_
+), na.rm = TRUE))
+if (!is.finite(max_week)) max_week <- 1L
+week_choices <- seq_len(as.integer(max_week))
+
+team_pass_week <- if (nrow(full_pbp) > 0) {
+  full_pbp %>%
+    filter(pass_attempt == 1, !is.na(receiver_id), down %in% 1:4) %>%
+    group_by(posteam, week) %>%
+    summarise(
+      team_targets = n(),
+      team_rz_targets = sum(yardline_100 <= RZ_LINE, na.rm = TRUE),
+      team_ez_targets = sum(yardline_100 <= EZ_LINE, na.rm = TRUE),
+      .groups = "drop"
+    )
+} else {
+  tibble(
+    posteam = character(), week = integer(),
+    team_targets = numeric(), team_rz_targets = numeric(), team_ez_targets = numeric()
+  )
+}
+
+snap_week <- safe_load(
   load_snap_counts(seasons = season),
-  error = function(e) {
-    warning("load_snap_counts() failed: ", conditionMessage(e))
-    tibble()
-  }
+  tibble(),
+  "load_snap_counts()"
 )
 
 if (nrow(snap_week) > 0) {
   snap_clean <- snap_week %>%
     filter(game_type == "REG" | is.na(game_type)) %>%
-    mutate(off_pct = if_else(offense_pct > 1.5, offense_pct / 100, offense_pct))
-  
-  snap_season <- snap_clean %>%
-    group_by(pfr_player_id) %>%
-    summarise(
-      offense_snaps = sum(offense_snaps, na.rm = TRUE),
-      offense_pct = weighted.mean(off_pct, w = pmax(offense_snaps, 1e-6), na.rm = TRUE),
-      .groups = "drop"
+    mutate(
+      offense_snaps = coalesce(as.numeric(offense_snaps), 0),
+      offense_pct_raw = as.numeric(offense_pct),
+      off_pct = case_when(
+        is.na(offense_pct_raw) ~ NA_real_,
+        offense_pct_raw > 1.5 ~ offense_pct_raw / 100,
+        TRUE ~ offense_pct_raw
+      )
     )
   
-  snap_team <- snap_clean %>%
-    group_by(pfr_player_id, player, team, position) %>%
-    summarise(
-      offense_snaps = sum(offense_snaps, na.rm = TRUE),
-      offense_pct = weighted.mean(off_pct, w = pmax(offense_snaps, 1e-6), na.rm = TRUE),
-      .groups = "drop"
-    )
+  team_off_week <- snap_clean %>%
+    group_by(team, week) %>%
+    summarise(team_off_snaps = suppressWarnings(max(offense_snaps, na.rm = TRUE)), .groups = "drop") %>%
+    mutate(team_off_snaps = ifelse(is.finite(team_off_snaps), team_off_snaps, NA_real_))
+  
+  # Weighted mean must use the *row-level* offense_snaps vector. In dplyr::summarise()
+  # expressions run left to right, so summing into offense_snaps first made
+  # weighted.mean() see a length-1 weight and a longer x (the AlfoDe00 error).
+  snap_player_week <- snap_clean %>%
+    left_join(team_off_week, by = c("team", "week")) %>%
+    mutate(
+      offense_pct = if_else(
+        !is.na(team_off_snaps) & team_off_snaps > 0,
+        safe_div(offense_snaps, team_off_snaps),
+        off_pct
+      )
+    ) %>%
+    select(pfr_player_id, player, team, position, week, offense_snaps, team_off_snaps, offense_pct)
 } else {
-  snap_season <- tibble(pfr_player_id = character(), offense_snaps = numeric(), offense_pct = numeric())
-  snap_team <- tibble(
+  snap_player_week <- tibble(
     pfr_player_id = character(), player = character(), team = character(),
-    position = character(), offense_snaps = numeric(), offense_pct = numeric()
+    position = character(), week = integer(),
+    offense_snaps = numeric(), team_off_snaps = numeric(), offense_pct = numeric()
   )
 }
 
-team_rush <- full_pbp %>%
-  filter(rush_attempt == 1, !is.na(rusher_id), down %in% 1:4) %>%
-  group_by(posteam) %>%
-  summarise(
-    team_carries = n(),
-    team_rz_carries = sum(yardline_100 <= RZ_LINE, na.rm = TRUE),
-    team_ez_carries = sum(yardline_100 <= EZ_LINE, na.rm = TRUE),
-    .groups = "drop"
+team_rush_week <- if (nrow(full_pbp) > 0) {
+  full_pbp %>%
+    filter(rush_attempt == 1, !is.na(rusher_id), down %in% 1:4) %>%
+    group_by(posteam, week) %>%
+    summarise(
+      team_carries = n(),
+      team_rz_carries = sum(yardline_100 <= RZ_LINE, na.rm = TRUE),
+      team_ez_carries = sum(yardline_100 <= EZ_LINE, na.rm = TRUE),
+      .groups = "drop"
+    )
+} else {
+  tibble(
+    posteam = character(), week = integer(),
+    team_carries = numeric(), team_rz_carries = numeric(), team_ez_carries = numeric()
   )
+}
 
-team_meta <- load_teams()
-team_meta <- team_meta %>%
-  select(any_of(c(
-    "team_abbr", "team_wordmark", "team_logo_espn",
-    "team_color", "team_color2", "team_color3", "team_color4"
-  )))
+team_meta <- safe_load(
+  load_teams() %>%
+    select(any_of(c(
+      "team_abbr", "team_wordmark", "team_logo_espn",
+      "team_color", "team_color2", "team_color3", "team_color4"
+    ))),
+  tibble(team_abbr = character()),
+  "load_teams()"
+)
 
-
-# Resolve a theme-specific logo that works locally and on shinyapps.io.
-# Place both files in ./logo (or ./www) next to the app script:
-#   FSP_Logo_Dark.png  -> dark mode  (#0b1220)
-#   FSP_Logo_White.png -> light mode (#ffffff)
 resolve_logo_path <- function(dark = FALSE) {
   filename <- if (isTRUE(dark)) "FSP_Logo_Dark.png" else "FSP_Logo_White.png"
-  dirs <- c(
-    "logo",
-    "www",
-    file.path("www", "logo")
-  )
+  dirs <- c("logo", "www", file.path("www", "logo"))
   candidates <- file.path(dirs, filename)
   fallback <- file.path(dirs, c("FSP_logo.png", "FSP_Logo.png"))
   hit <- candidates[file.exists(candidates)]
@@ -369,8 +454,9 @@ player_last <- function(x) {
 }
 
 share_pie_plot <- function(data, team_abbr, positions, dark = FALSE,
-                           title_metric = "share", subtitle = "", empty_noun = "data") {
-  week_bit <- if (is.finite(max_week)) paste("Week", max_week) else paste(season)
+                           title_metric = "share", subtitle = "", empty_noun = "data",
+                           scope_label = "") {
+  week_bit <- if (nzchar(scope_label)) scope_label else paste(season)
   bg <- if (dark) "#0b1220" else "#ffffff"
   fg <- if (dark) "#f8fafc" else "#0f172a"
   
@@ -397,23 +483,41 @@ share_pie_plot <- function(data, team_abbr, positions, dark = FALSE,
   )[positions], use.names = FALSE))
   
   pie_df <- data %>%
-    filter(team == team_abbr, position %in% pos_want, value > 0) %>%
-    arrange(desc(value))
+    filter(team == team_abbr, position %in% pos_want, replace_na(pct, 0) > 0) %>%
+    arrange(desc(pct), desc(value))
   
   if (nrow(pie_df) == 0) {
     return(empty_plot(paste("No", empty_noun, "for", team_abbr)))
   }
   
+  shown <- sum(pie_df$pct, na.rm = TRUE)
+  if (is.finite(shown) && shown < 0.995) {
+    pie_df <- bind_rows(
+      pie_df,
+      tibble(
+        player = "Rest of team",
+        team = team_abbr,
+        position = "OTH",
+        value = 0,
+        pct = max(0, 1 - shown)
+      )
+    )
+  }
+  
   pie_df <- pie_df %>%
     mutate(
-      player_lab = paste0(player, " (", position, ")"),
-      slice_lab = paste0(player_last(player), "\n", round(pct * 100), "%"),
+      player_lab = if_else(
+        player == "Rest of team",
+        "Rest of team",
+        paste0(player, " (", position, ")")
+      ),
       player_lab = factor(player_lab, levels = unique(player_lab)),
-      fraction = value / sum(value),
+      fraction = pmax(pct, 0),
+      fraction = fraction / sum(fraction),
       ymax = cumsum(fraction),
       ymin = lag(ymax, default = 0),
       mid = (ymin + ymax) / 2,
-      outside = fraction < 0.08
+      outside = fraction < 0.08 | player == "Rest of team"
     )
   
   spread_mids <- function(mids, min_gap = 0.045) {
@@ -440,17 +544,21 @@ share_pie_plot <- function(data, team_abbr, positions, dark = FALSE,
   
   pie_df <- pie_df %>%
     mutate(
-      # Push the text off the leader along the arc (same direction already used to unstack labels).
       text_at = if_else(
         outside,
         label_at + sign(label_at - mid + 1e-4) * 0.022,
         mid
       ),
-      slice_lab = paste0(player_last(player), "\n", round(pct * 100), "%")
+      slice_lab = if_else(
+        player == "Rest of team",
+        paste0("Rest\n", round(pct * 100), "%"),
+        paste0(player_last(player), "\n", round(pct * 100), "%")
+      )
     )
   
-  fills <- team_fill_colors(team_abbr, nrow(pie_df))
-  names(fills) <- levels(pie_df$player_lab)
+  fills <- team_fill_colors(team_abbr, sum(pie_df$player != "Rest of team"))
+  fill_map <- c(fills, if (any(pie_df$player == "Rest of team")) "#64748b")
+  names(fill_map) <- levels(pie_df$player_lab)
   
   outside_df <- pie_df[pie_df$outside, , drop = FALSE]
   inside_df  <- pie_df[!pie_df$outside, , drop = FALSE]
@@ -497,7 +605,7 @@ share_pie_plot <- function(data, team_abbr, positions, dark = FALSE,
       hjust = 0,
       vjust = 0.5
     ) +
-    scale_fill_manual(values = fills) +
+    scale_fill_manual(values = fill_map) +
     coord_polar(theta = "y") +
     xlim(0.05, 1.95) +
     labs(
@@ -516,7 +624,6 @@ share_pie_plot <- function(data, team_abbr, positions, dark = FALSE,
     )
 }
 
-# Bake the logo into the ggplot so on-screen and downloaded PNGs both include it.
 add_plot_logo <- function(p, dark = FALSE) {
   bg <- if (isTRUE(dark)) "#0b1220" else "#ffffff"
   logo_file <- resolve_logo_path(dark)
@@ -582,264 +689,431 @@ draw_share_pie <- function(p, dark = FALSE) {
   print(add_plot_logo(p, dark = dark))
 }
 
-snap_pie_plot <- function(team_abbr, positions, dark = FALSE) {
-  share_pie_plot(
-    snap_team %>% transmute(player, team, position, value = offense_snaps, pct = offense_pct),
-    team_abbr, positions, dark,
-    title_metric = "offensive snap share",
-    subtitle = "Slice size = offensive snap share.",
-    empty_noun = "offensive snap data"
+# ---------------------------------------------------------------------------
+# Official weekly box scores + PBP usage by player-week
+# ---------------------------------------------------------------------------
+official_week <- if (nrow(player_week) > 0) {
+  player_week %>%
+    arrange(week) %>%
+    transmute(
+      player_id,
+      week,
+      player_name_stats = player_display_name,
+      team_stats = team,
+      position_stats = position,
+      headshot_stats = headshot_url,
+      targets = coalesce(targets, 0),
+      receptions = coalesce(receptions, 0),
+      receiving_yards = coalesce(receiving_yards, 0),
+      yards_after_catch = coalesce(receiving_yards_after_catch, 0),
+      air_yards = coalesce(receiving_air_yards, 0),
+      receiving_td = coalesce(receiving_tds, 0),
+      carries = coalesce(carries, 0),
+      rushing_yards = coalesce(rushing_yards, 0),
+      rushing_td = coalesce(rushing_tds, 0),
+      completions = coalesce(completions, 0),
+      attempts = coalesce(attempts, 0),
+      passing_yards = coalesce(passing_yards, 0),
+      passing_td = coalesce(passing_tds, 0),
+      interceptions = coalesce(passing_interceptions, 0),
+      passing_air_yards = coalesce(passing_air_yards, 0),
+      sacks = coalesce(sacks_suffered, 0),
+      fumbles = coalesce(receiving_fumbles, 0) +
+        coalesce(rushing_fumbles, 0) +
+        coalesce(sack_fumbles, 0),
+      fumbles_lost = coalesce(receiving_fumbles_lost, 0) +
+        coalesce(rushing_fumbles_lost, 0) +
+        coalesce(sack_fumbles_lost, 0),
+      official_ppr = coalesce(fantasy_points_ppr, 0),
+      official_fp = coalesce(fantasy_points, 0),
+      receiving_epa = coalesce(receiving_epa, 0),
+      rushing_epa = coalesce(rushing_epa, 0),
+      passing_epa = coalesce(passing_epa, 0)
+    )
+} else {
+  tibble(
+    player_id = character(), week = integer(),
+    player_name_stats = character(), team_stats = character(),
+    position_stats = character(), headshot_stats = character(),
+    targets = numeric(), receptions = numeric(), receiving_yards = numeric(),
+    yards_after_catch = numeric(), air_yards = numeric(), receiving_td = numeric(),
+    carries = numeric(), rushing_yards = numeric(), rushing_td = numeric(),
+    completions = numeric(), attempts = numeric(), passing_yards = numeric(),
+    passing_td = numeric(), interceptions = numeric(), passing_air_yards = numeric(),
+    sacks = numeric(), fumbles = numeric(), fumbles_lost = numeric(),
+    official_ppr = numeric(), official_fp = numeric(),
+    receiving_epa = numeric(), rushing_epa = numeric(), passing_epa = numeric()
   )
 }
 
-draw_snap_pie <- function(team_abbr, positions, dark = FALSE) {
-  draw_share_pie(snap_pie_plot(team_abbr, positions, dark = dark), dark = dark)
+pbp_recv_week <- if (nrow(full_pbp) > 0) {
+  full_pbp %>%
+    filter(pass_attempt == 1, down %in% 1:4, !is.na(receiver_id)) %>%
+    group_by(player_id = receiver_id, week) %>%
+    summarise(
+      pbp_targets = n(),
+      rz_targets = sum(yardline_100 <= RZ_LINE, na.rm = TRUE),
+      rz_rec = sum(yardline_100 <= RZ_LINE & complete_pass == 1, na.rm = TRUE),
+      ez_targets = sum(yardline_100 <= EZ_LINE, na.rm = TRUE),
+      ez_rec = sum(yardline_100 <= EZ_LINE & complete_pass == 1, na.rm = TRUE),
+      recv_first_downs = sum(first_down_pass == 1, na.rm = TRUE),
+      recv_epa_pbp = sum(epa, na.rm = TRUE),
+      recv_team = modal_team(posteam),
+      .groups = "drop"
+    )
+} else {
+  tibble(
+    player_id = character(), week = integer(), pbp_targets = numeric(),
+    rz_targets = numeric(), rz_rec = numeric(), ez_targets = numeric(),
+    ez_rec = numeric(), recv_first_downs = numeric(), recv_epa_pbp = numeric(),
+    recv_team = character()
+  )
 }
 
-# ---------------------------------------------------------------------------
-# Official season rollups
-# ---------------------------------------------------------------------------
-
-official_all <- player_week %>%
-  group_by(player_id) %>%
-  summarise(
-    player_name_stats = dplyr::last(na.omit(player_display_name)),
-    team_stats = dplyr::last(na.omit(team)),
-    position_stats = dplyr::last(na.omit(position)),
-    headshot_stats = dplyr::last(na.omit(headshot_url)),
-    games_played = n_distinct(week),
-    targets = sum(targets, na.rm = TRUE),
-    receptions = sum(receptions, na.rm = TRUE),
-    receiving_yards = sum(receiving_yards, na.rm = TRUE),
-    yards_after_catch = sum(receiving_yards_after_catch, na.rm = TRUE),
-    air_yards = sum(receiving_air_yards, na.rm = TRUE),
-    receiving_td = sum(receiving_tds, na.rm = TRUE),
-    carries = sum(carries, na.rm = TRUE),
-    rushing_yards = sum(rushing_yards, na.rm = TRUE),
-    rushing_td = sum(rushing_tds, na.rm = TRUE),
-    completions = sum(completions, na.rm = TRUE),
-    attempts = sum(attempts, na.rm = TRUE),
-    passing_yards = sum(passing_yards, na.rm = TRUE),
-    passing_td = sum(passing_tds, na.rm = TRUE),
-    interceptions = sum(passing_interceptions, na.rm = TRUE),
-    passing_air_yards = sum(passing_air_yards, na.rm = TRUE),
-    sacks = sum(sacks_suffered, na.rm = TRUE),
-    fumbles = sum(receiving_fumbles, rushing_fumbles, sack_fumbles, na.rm = TRUE),
-    fumbles_lost = sum(receiving_fumbles_lost, rushing_fumbles_lost, sack_fumbles_lost, na.rm = TRUE),
-    official_ppr = sum(fantasy_points_ppr, na.rm = TRUE),
-    official_fp = sum(fantasy_points, na.rm = TRUE),
-    receiving_epa = sum(receiving_epa, na.rm = TRUE),
-    rushing_epa = sum(rushing_epa, na.rm = TRUE),
-    passing_epa = sum(passing_epa, na.rm = TRUE),
-    .groups = "drop"
+pbp_rush_week <- if (nrow(full_pbp) > 0) {
+  full_pbp %>%
+    filter(rush_attempt == 1, down %in% 1:4, !is.na(rusher_id)) %>%
+    group_by(player_id = rusher_id, week) %>%
+    summarise(
+      pbp_carries = n(),
+      rz_carries = sum(yardline_100 <= RZ_LINE, na.rm = TRUE),
+      ez_carries = sum(yardline_100 <= EZ_LINE, na.rm = TRUE),
+      rush_first_downs = sum(first_down_rush == 1, na.rm = TRUE),
+      rush_epa_pbp = sum(epa, na.rm = TRUE),
+      rush_team = modal_team(posteam),
+      .groups = "drop"
+    )
+} else {
+  tibble(
+    player_id = character(), week = integer(), pbp_carries = numeric(),
+    rz_carries = numeric(), ez_carries = numeric(), rush_first_downs = numeric(),
+    rush_epa_pbp = numeric(), rush_team = character()
   )
-
-# ---------------------------------------------------------------------------
-# PBP usage by player
-# ---------------------------------------------------------------------------
-
-pbp_recv <- full_pbp %>%
-  filter(pass_attempt == 1, down %in% 1:4, !is.na(receiver_id)) %>%
-  group_by(player_id = receiver_id) %>%
-  summarise(
-    pbp_targets = n(),
-    rz_targets = sum(yardline_100 <= RZ_LINE, na.rm = TRUE),
-    rz_rec = sum(yardline_100 <= RZ_LINE & complete_pass == 1, na.rm = TRUE),
-    ez_targets = sum(yardline_100 <= EZ_LINE, na.rm = TRUE),
-    ez_rec = sum(yardline_100 <= EZ_LINE & complete_pass == 1, na.rm = TRUE),
-    recv_first_downs = sum(first_down_pass == 1, na.rm = TRUE),
-    recv_epa_pbp = sum(epa, na.rm = TRUE),
-    recv_team = names(sort(table(posteam[!is.na(posteam)]), decreasing = TRUE))[1],
-    .groups = "drop"
-  )
-
-pbp_rush <- full_pbp %>%
-  filter(rush_attempt == 1, down %in% 1:4, !is.na(rusher_id)) %>%
-  group_by(player_id = rusher_id) %>%
-  summarise(
-    pbp_carries = n(),
-    rz_carries = sum(yardline_100 <= RZ_LINE, na.rm = TRUE),
-    ez_carries = sum(yardline_100 <= EZ_LINE, na.rm = TRUE),
-    rush_first_downs = sum(first_down_rush == 1, na.rm = TRUE),
-    rush_epa_pbp = sum(epa, na.rm = TRUE),
-    rush_team = names(sort(table(posteam[!is.na(posteam)]), decreasing = TRUE))[1],
-    .groups = "drop"
-  )
-
-pbp_pass <- full_pbp %>%
-  filter(pass_attempt == 1, down %in% 1:4, !is.na(passer_id)) %>%
-  group_by(player_id = passer_id) %>%
-  summarise(
-    pbp_attempts = n(),
-    rz_pass_att = sum(yardline_100 <= RZ_LINE, na.rm = TRUE),
-    rz_pass_td = sum(yardline_100 <= RZ_LINE & pass_touchdown == 1, na.rm = TRUE),
-    ez_pass_att = sum(yardline_100 <= EZ_LINE, na.rm = TRUE),
-    ez_pass_td = sum(yardline_100 <= EZ_LINE & pass_touchdown == 1, na.rm = TRUE),
-    pass_epa_pbp = sum(epa, na.rm = TRUE),
-    cpoe = mean(cpoe, na.rm = TRUE),
-    pass_team = names(sort(table(posteam[!is.na(posteam)]), decreasing = TRUE))[1],
-    .groups = "drop"
-  )
-
-# ---------------------------------------------------------------------------
-# Position tables
-# ---------------------------------------------------------------------------
-
-attach_identity <- function(df) {
-  if (!"recv_team" %in% names(df)) df$recv_team <- NA_character_
-  if (!"rush_team" %in% names(df)) df$rush_team <- NA_character_
-  if (!"pass_team" %in% names(df)) df$pass_team <- NA_character_
-  
-  df %>%
-    left_join(latest_roster, by = "player_id") %>%
-    mutate(
-      player_name = coalesce(player_name, player_name_stats),
-      team = coalesce(team, team_stats, recv_team, rush_team, pass_team),
-      position = coalesce(position, position_stats),
-      headshot_url = coalesce(headshot_url, headshot_stats)
-    ) %>%
-    left_join(team_meta, by = c("team" = "team_abbr"))
 }
 
-skill_stats <- official_all %>%
-  left_join(pbp_recv, by = "player_id") %>%
-  left_join(pbp_rush, by = "player_id") %>%
-  attach_identity() %>%
-  left_join(snap_season, by = c("pfr_id" = "pfr_player_id")) %>%
-  left_join(team_pass, by = c("team" = "posteam")) %>%
-  left_join(team_rush, by = c("team" = "posteam")) %>%
+pbp_pass_week <- if (nrow(full_pbp) > 0) {
+  full_pbp %>%
+    filter(pass_attempt == 1, down %in% 1:4, !is.na(passer_id)) %>%
+    group_by(player_id = passer_id, week) %>%
+    summarise(
+      pbp_attempts = n(),
+      rz_pass_att = sum(yardline_100 <= RZ_LINE, na.rm = TRUE),
+      rz_pass_td = sum(yardline_100 <= RZ_LINE & pass_touchdown == 1, na.rm = TRUE),
+      ez_pass_att = sum(yardline_100 <= EZ_LINE, na.rm = TRUE),
+      ez_pass_td = sum(yardline_100 <= EZ_LINE & pass_touchdown == 1, na.rm = TRUE),
+      pass_epa_pbp = sum(epa, na.rm = TRUE),
+      cpoe_sum = sum(cpoe, na.rm = TRUE),
+      cpoe_n = sum(!is.na(cpoe)),
+      pass_team = modal_team(posteam),
+      .groups = "drop"
+    )
+} else {
+  tibble(
+    player_id = character(), week = integer(), pbp_attempts = numeric(),
+    rz_pass_att = numeric(), rz_pass_td = numeric(),
+    ez_pass_att = numeric(), ez_pass_td = numeric(),
+    pass_epa_pbp = numeric(), cpoe_sum = numeric(), cpoe_n = numeric(),
+    pass_team = character()
+  )
+}
+
+skill_week <- official_week %>%
+  left_join(roster_week_thin, by = c("player_id", "week")) %>%
+  left_join(pbp_recv_week, by = c("player_id", "week")) %>%
+  left_join(pbp_rush_week, by = c("player_id", "week")) %>%
   mutate(
-    targets = coalesce(targets, pbp_targets, 0),
-    carries = coalesce(carries, pbp_carries, 0),
+    player_name = coalesce(roster_name, player_name_stats),
+    team = coalesce(team_stats, roster_team, recv_team, rush_team),
+    position = coalesce(roster_position, position_stats),
+    headshot_url = coalesce(roster_headshot, headshot_stats)
+  ) %>%
+  left_join(
+    snap_player_week %>%
+      select(pfr_player_id, week, snap_team = team, offense_snaps, team_off_snaps),
+    by = c("pfr_id" = "pfr_player_id", "week")
+  ) %>%
+  left_join(team_pass_week, by = c("team" = "posteam", "week")) %>%
+  left_join(team_rush_week, by = c("team" = "posteam", "week")) %>%
+  mutate(
+    targets = replace_na(targets, 0),
+    carries = replace_na(carries, 0),
+    pbp_targets = replace_na(pbp_targets, 0),
+    pbp_carries = replace_na(pbp_carries, 0),
     rz_targets = replace_na(rz_targets, 0),
     rz_rec = replace_na(rz_rec, 0),
     ez_targets = replace_na(ez_targets, 0),
     ez_rec = replace_na(ez_rec, 0),
     rz_carries = replace_na(rz_carries, 0),
     ez_carries = replace_na(ez_carries, 0),
-    first_downs = replace_na(recv_first_downs, 0) + replace_na(rush_first_downs, 0),
-    total_epa = coalesce(recv_epa_pbp, 0) + coalesce(rush_epa_pbp, 0),
-    target_share = safe_div(targets, team_targets),
-    rz_tgt_share = safe_div(rz_targets, team_rz_targets),
-    ez_tgt_share = safe_div(ez_targets, team_ez_targets),
-    rz_rec_share = safe_div(rz_rec, rz_targets),
-    ez_rec_share = safe_div(ez_rec, ez_targets),
-    fd_share = safe_div(first_downs, targets),
-    carry_share = safe_div(carries, team_carries),
-    ypc = safe_div(rushing_yards, carries),
-    rush_fd_pct = safe_div(replace_na(rush_first_downs, 0), carries),
-    rz_carry_share = safe_div(rz_carries, team_rz_carries),
-    ez_carry_share = safe_div(ez_carries, team_ez_carries),
-    total_td = replace_na(receiving_td, 0) + replace_na(rushing_td, 0),
+    recv_first_downs = replace_na(recv_first_downs, 0),
+    rush_first_downs = replace_na(rush_first_downs, 0),
+    team_targets = replace_na(team_targets, 0),
+    team_rz_targets = replace_na(team_rz_targets, 0),
+    team_ez_targets = replace_na(team_ez_targets, 0),
+    team_carries = replace_na(team_carries, 0),
+    team_rz_carries = replace_na(team_rz_carries, 0),
+    team_ez_carries = replace_na(team_ez_carries, 0),
     offense_snaps = replace_na(offense_snaps, 0),
-    offense_pct = replace_na(offense_pct, 0),
-    total_fp = coalesce(official_ppr, 0),
-    fp_g = safe_div(total_fp, games_played)
-  ) %>%
-  filter(!is.na(player_name))
-
-tgt_team <- skill_stats %>%
-  filter(!is.na(team), replace_na(targets, 0) > 0) %>%
-  transmute(
-    player = player_name,
-    team,
-    position,
-    value = targets,
-    pct = target_share
+    team_off_snaps = replace_na(team_off_snaps, 0)
   )
 
-tgt_pie_plot <- function(team_abbr, positions, dark = FALSE) {
-  share_pie_plot(
-    tgt_team,
-    team_abbr, positions, dark,
-    title_metric = "target share",
-    subtitle = "Slice size = target share",
-    empty_noun = "target data"
-  )
-}
-
-draw_tgt_pie <- function(team_abbr, positions, dark = FALSE) {
-  draw_share_pie(tgt_pie_plot(team_abbr, positions, dark = dark), dark = dark)
-}
-
-wr_stats <- skill_stats %>%
-  filter(position == "WR", targets > 0 | receiving_yards > 0 | rushing_yards > 0) %>%
-  arrange(desc(total_fp), desc(targets)) %>%
-  mutate(rank = row_number()) %>%
-  select(
-    rank, player_id, player_name, headshot_url, team, team_wordmark, team_logo_espn,
-    games_played, offense_snaps, offense_pct, targets, receptions, receiving_yards, yards_after_catch, air_yards,
-    target_share, receiving_td, rushing_yards, rushing_td, fumbles,
-    rz_targets, rz_rec, rz_tgt_share, rz_rec_share,
-    ez_targets, ez_rec, ez_tgt_share, ez_rec_share,
-    first_downs, fd_share, total_epa, fp_g, total_fp
-  )
-
-te_stats <- skill_stats %>%
-  filter(position == "TE", targets > 0 | receiving_yards > 0 | rushing_yards > 0) %>%
-  arrange(desc(total_fp), desc(targets)) %>%
-  mutate(rank = row_number()) %>%
-  select(
-    rank, player_id, player_name, headshot_url, team, team_wordmark, team_logo_espn,
-    games_played, offense_snaps, offense_pct, targets, receptions, receiving_yards, yards_after_catch, air_yards,
-    target_share, total_td, carries, rushing_yards, fumbles,
-    rz_targets, rz_rec, rz_tgt_share, rz_rec_share,
-    ez_targets, ez_rec, ez_tgt_share, ez_rec_share,
-    first_downs, fd_share, total_epa, fp_g, total_fp
-  )
-
-rb_stats <- skill_stats %>%
-  filter(position %in% c("RB", "FB", "HB"), carries > 0 | targets > 0) %>%
-  arrange(desc(total_fp), desc(carries)) %>%
-  mutate(rank = row_number()) %>%
-  select(
-    rank, player_id, player_name, headshot_url, team, team_wordmark, team_logo_espn,
-    games_played, offense_snaps, offense_pct, carries, rushing_yards, ypc, rushing_td, carry_share,
-    rz_carries, rz_carry_share, ez_carries, ez_carry_share,
-    targets, receptions, receiving_yards, receiving_td,
-    rush_first_downs, rush_fd_pct, total_epa, fp_g, total_fp
-  )
-
-qb_stats <- official_all %>%
-  left_join(pbp_pass, by = "player_id") %>%
-  left_join(pbp_rush, by = "player_id") %>%
-  attach_identity() %>%
-  left_join(snap_season, by = c("pfr_id" = "pfr_player_id")) %>%
+qb_week <- official_week %>%
+  left_join(roster_week_thin, by = c("player_id", "week")) %>%
+  left_join(pbp_pass_week, by = c("player_id", "week")) %>%
+  left_join(pbp_rush_week, by = c("player_id", "week")) %>%
   mutate(
-    attempts = coalesce(attempts, pbp_attempts, 0),
+    player_name = coalesce(roster_name, player_name_stats),
+    team = coalesce(team_stats, roster_team, pass_team, rush_team),
+    position = coalesce(roster_position, position_stats),
+    headshot_url = coalesce(roster_headshot, headshot_stats)
+  ) %>%
+  left_join(
+    snap_player_week %>%
+      select(pfr_player_id, week, offense_snaps, team_off_snaps),
+    by = c("pfr_id" = "pfr_player_id", "week")
+  ) %>%
+  mutate(
+    attempts = replace_na(attempts, 0),
+    pbp_attempts = replace_na(pbp_attempts, 0),
     completions = replace_na(completions, 0),
-    cmp_pct = safe_div(completions, attempts),
-    ypa = safe_div(passing_yards, attempts),
-    adot = safe_div(passing_air_yards, attempts),
     rz_pass_att = replace_na(rz_pass_att, 0),
     rz_pass_td = replace_na(rz_pass_td, 0),
     ez_pass_att = replace_na(ez_pass_att, 0),
     ez_pass_td = replace_na(ez_pass_td, 0),
-    cpoe = replace_na(cpoe, 0),
-    total_epa = coalesce(pass_epa_pbp, passing_epa, 0) + coalesce(rush_epa_pbp, rushing_epa, 0),
-    total_fp = coalesce(official_ppr, official_fp, 0),
-    fp_g = safe_div(total_fp, games_played),
+    cpoe_sum = replace_na(cpoe_sum, 0),
+    cpoe_n = replace_na(cpoe_n, 0),
     offense_snaps = replace_na(offense_snaps, 0),
-    offense_pct = replace_na(offense_pct, 0)
-  ) %>%
-  filter(position == "QB", attempts > 0 | rushing_yards != 0) %>%
-  arrange(desc(total_fp), desc(attempts)) %>%
-  mutate(rank = row_number()) %>%
-  select(
-    rank, player_id, player_name, headshot_url, team, team_wordmark, team_logo_espn,
-    games_played, offense_snaps, offense_pct, completions, attempts, cmp_pct, passing_yards, ypa, adot,
-    passing_td, interceptions, sacks, cpoe,
-    carries, rushing_yards, rushing_td,
-    rz_pass_att, rz_pass_td, ez_pass_att, ez_pass_td,
-    total_epa, fp_g, total_fp
+    team_off_snaps = replace_na(team_off_snaps, 0),
+    carries = replace_na(carries, 0),
+    rush_epa_pbp = replace_na(rush_epa_pbp, 0),
+    pass_epa_pbp = replace_na(pass_epa_pbp, 0)
   )
 
-all_teams <- sort(unique(na.omit(c(wr_stats$team, te_stats$team, rb_stats$team, qb_stats$team))))
+# ---------------------------------------------------------------------------
+# Roll weekly rows up to the selected window (one week or season-to-date)
+# Shares use the team-week denominator from the same games, so a trade does
+# not compare a player's prior-team volume to his new team's season total.
+# ---------------------------------------------------------------------------
+roll_skill <- function(df) {
+  if (nrow(df) == 0) return(df)
+  df %>%
+    arrange(week) %>%
+    group_by(player_id) %>%
+    summarise(
+      player_name = last_non_na(player_name),
+      team = last_non_na(team),
+      position = last_non_na(position),
+      headshot_url = last_non_na(headshot_url),
+      pfr_id = last_non_na(pfr_id),
+      games_played = n_distinct(week),
+      targets = sum(targets, na.rm = TRUE),
+      receptions = sum(receptions, na.rm = TRUE),
+      receiving_yards = sum(receiving_yards, na.rm = TRUE),
+      yards_after_catch = sum(yards_after_catch, na.rm = TRUE),
+      air_yards = sum(air_yards, na.rm = TRUE),
+      receiving_td = sum(receiving_td, na.rm = TRUE),
+      carries = sum(carries, na.rm = TRUE),
+      rushing_yards = sum(rushing_yards, na.rm = TRUE),
+      rushing_td = sum(rushing_td, na.rm = TRUE),
+      fumbles = sum(fumbles, na.rm = TRUE),
+      official_ppr = sum(official_ppr, na.rm = TRUE),
+      pbp_targets = sum(pbp_targets, na.rm = TRUE),
+      rz_targets = sum(rz_targets, na.rm = TRUE),
+      rz_rec = sum(rz_rec, na.rm = TRUE),
+      ez_targets = sum(ez_targets, na.rm = TRUE),
+      ez_rec = sum(ez_rec, na.rm = TRUE),
+      recv_first_downs = sum(recv_first_downs, na.rm = TRUE),
+      rush_first_downs = sum(rush_first_downs, na.rm = TRUE),
+      recv_epa_pbp = sum(recv_epa_pbp, na.rm = TRUE),
+      rush_epa_pbp = sum(rush_epa_pbp, na.rm = TRUE),
+      pbp_carries = sum(pbp_carries, na.rm = TRUE),
+      rz_carries = sum(rz_carries, na.rm = TRUE),
+      ez_carries = sum(ez_carries, na.rm = TRUE),
+      team_targets = sum(team_targets, na.rm = TRUE),
+      team_rz_targets = sum(team_rz_targets, na.rm = TRUE),
+      team_ez_targets = sum(team_ez_targets, na.rm = TRUE),
+      team_carries = sum(team_carries, na.rm = TRUE),
+      team_rz_carries = sum(team_rz_carries, na.rm = TRUE),
+      team_ez_carries = sum(team_ez_carries, na.rm = TRUE),
+      offense_snaps = sum(offense_snaps, na.rm = TRUE),
+      team_off_snaps = sum(team_off_snaps, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    left_join(team_meta, by = c("team" = "team_abbr")) %>%
+    mutate(
+      recv_first_downs = replace_na(recv_first_downs, 0),
+      rush_first_downs = replace_na(rush_first_downs, 0),
+      first_downs = recv_first_downs,
+      total_epa = coalesce(recv_epa_pbp, 0) + coalesce(rush_epa_pbp, 0),
+      target_share = safe_div(pbp_targets, team_targets),
+      rz_tgt_share = safe_div(rz_targets, team_rz_targets),
+      ez_tgt_share = safe_div(ez_targets, team_ez_targets),
+      rz_rec_share = safe_div(rz_rec, rz_targets),
+      ez_rec_share = safe_div(ez_rec, ez_targets),
+      fd_share = safe_div(recv_first_downs, pbp_targets),
+      carry_share = safe_div(pbp_carries, team_carries),
+      ypc = safe_div(rushing_yards, carries),
+      rush_fd_pct = safe_div(rush_first_downs, carries),
+      rz_carry_share = safe_div(rz_carries, team_rz_carries),
+      ez_carry_share = safe_div(ez_carries, team_ez_carries),
+      total_td = replace_na(receiving_td, 0) + replace_na(rushing_td, 0),
+      offense_pct = safe_div(offense_snaps, team_off_snaps),
+      total_fp = coalesce(official_ppr, 0),
+      fp_g = safe_div(total_fp, games_played)
+    ) %>%
+    filter(!is.na(player_name))
+}
+
+roll_qb <- function(df) {
+  if (nrow(df) == 0) return(df)
+  df %>%
+    arrange(week) %>%
+    group_by(player_id) %>%
+    summarise(
+      player_name = last_non_na(player_name),
+      team = last_non_na(team),
+      position = last_non_na(position),
+      headshot_url = last_non_na(headshot_url),
+      games_played = n_distinct(week),
+      completions = sum(completions, na.rm = TRUE),
+      attempts = sum(attempts, na.rm = TRUE),
+      passing_yards = sum(passing_yards, na.rm = TRUE),
+      passing_air_yards = sum(passing_air_yards, na.rm = TRUE),
+      passing_td = sum(passing_td, na.rm = TRUE),
+      interceptions = sum(interceptions, na.rm = TRUE),
+      sacks = sum(sacks, na.rm = TRUE),
+      carries = sum(carries, na.rm = TRUE),
+      rushing_yards = sum(rushing_yards, na.rm = TRUE),
+      rushing_td = sum(rushing_td, na.rm = TRUE),
+      official_ppr = sum(official_ppr, na.rm = TRUE),
+      official_fp = sum(official_fp, na.rm = TRUE),
+      passing_epa = sum(passing_epa, na.rm = TRUE),
+      rushing_epa = sum(rushing_epa, na.rm = TRUE),
+      pbp_attempts = sum(pbp_attempts, na.rm = TRUE),
+      rz_pass_att = sum(rz_pass_att, na.rm = TRUE),
+      rz_pass_td = sum(rz_pass_td, na.rm = TRUE),
+      ez_pass_att = sum(ez_pass_att, na.rm = TRUE),
+      ez_pass_td = sum(ez_pass_td, na.rm = TRUE),
+      pass_epa_pbp = sum(pass_epa_pbp, na.rm = TRUE),
+      rush_epa_pbp = sum(rush_epa_pbp, na.rm = TRUE),
+      cpoe_sum = sum(cpoe_sum, na.rm = TRUE),
+      cpoe_n = sum(cpoe_n, na.rm = TRUE),
+      offense_snaps = sum(offense_snaps, na.rm = TRUE),
+      team_off_snaps = sum(team_off_snaps, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    left_join(team_meta, by = c("team" = "team_abbr")) %>%
+    mutate(
+      cmp_pct = safe_div(completions, attempts),
+      ypa = safe_div(passing_yards, attempts),
+      adot = safe_div(passing_air_yards, attempts),
+      cpoe = safe_div(cpoe_sum, cpoe_n),
+      total_epa = coalesce(pass_epa_pbp, passing_epa, 0) + coalesce(rush_epa_pbp, rushing_epa, 0),
+      total_fp = coalesce(official_ppr, official_fp, 0),
+      fp_g = safe_div(total_fp, games_played),
+      offense_pct = safe_div(offense_snaps, team_off_snaps)
+    ) %>%
+    filter(!is.na(player_name))
+}
+
+shape_wr <- function(df) {
+  df %>%
+    filter(position == "WR", targets > 0 | receiving_yards > 0 | rushing_yards > 0) %>%
+    arrange(desc(total_fp), desc(targets)) %>%
+    mutate(rank = row_number()) %>%
+    select(
+      rank, player_id, player_name, headshot_url, team, team_wordmark, team_logo_espn,
+      games_played, offense_snaps, offense_pct, targets, receptions, receiving_yards,
+      yards_after_catch, air_yards, target_share, receiving_td, rushing_yards, rushing_td,
+      fumbles, rz_targets, rz_rec, rz_tgt_share, rz_rec_share,
+      ez_targets, ez_rec, ez_tgt_share, ez_rec_share,
+      first_downs, fd_share, total_epa, fp_g, total_fp
+    )
+}
+
+shape_te <- function(df) {
+  df %>%
+    filter(position == "TE", targets > 0 | receiving_yards > 0 | rushing_yards > 0) %>%
+    arrange(desc(total_fp), desc(targets)) %>%
+    mutate(rank = row_number()) %>%
+    select(
+      rank, player_id, player_name, headshot_url, team, team_wordmark, team_logo_espn,
+      games_played, offense_snaps, offense_pct, targets, receptions, receiving_yards,
+      yards_after_catch, air_yards, target_share, total_td, carries, rushing_yards, fumbles,
+      rz_targets, rz_rec, rz_tgt_share, rz_rec_share,
+      ez_targets, ez_rec, ez_tgt_share, ez_rec_share,
+      first_downs, fd_share, total_epa, fp_g, total_fp
+    )
+}
+
+shape_rb <- function(df) {
+  df %>%
+    filter(position %in% c("RB", "FB", "HB"), carries > 0 | targets > 0) %>%
+    arrange(desc(total_fp), desc(carries)) %>%
+    mutate(rank = row_number()) %>%
+    select(
+      rank, player_id, player_name, headshot_url, team, team_wordmark, team_logo_espn,
+      games_played, offense_snaps, offense_pct, carries, rushing_yards, ypc, rushing_td,
+      carry_share, rz_carries, rz_carry_share, ez_carries, ez_carry_share,
+      targets, receptions, receiving_yards, receiving_td, fumbles,
+      rush_first_downs, rush_fd_pct, total_epa, fp_g, total_fp
+    )
+}
+
+shape_qb <- function(df) {
+  df %>%
+    filter(position == "QB", attempts > 0 | rushing_yards != 0) %>%
+    arrange(desc(total_fp), desc(attempts)) %>%
+    mutate(rank = row_number()) %>%
+    select(
+      rank, player_id, player_name, headshot_url, team, team_wordmark, team_logo_espn,
+      games_played, offense_snaps, offense_pct, completions, attempts, cmp_pct,
+      passing_yards, ypa, adot, passing_td, interceptions, sacks, cpoe,
+      carries, rushing_yards, rushing_td,
+      rz_pass_att, rz_pass_td, ez_pass_att, ez_pass_td,
+      total_epa, fp_g, total_fp
+    )
+}
+
+season_skill <- roll_skill(skill_week)
+season_qb <- roll_qb(qb_week)
+season_wr <- shape_wr(season_skill)
+season_te <- shape_te(season_skill)
+season_rb <- shape_rb(season_skill)
+season_qb_tbl <- shape_qb(season_qb)
+
+all_teams <- sort(unique(na.omit(c(
+  season_wr$team, season_te$team, season_rb$team, season_qb_tbl$team,
+  skill_week$team, qb_week$team
+))))
+
+roll_tgt_pie <- function(df) {
+  df %>%
+    filter(!is.na(team), replace_na(pbp_targets, 0) > 0) %>%
+    group_by(player = player_name, team, position) %>%
+    summarise(
+      value = sum(pbp_targets, na.rm = TRUE),
+      team_targets = sum(team_targets, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(pct = safe_div(value, team_targets))
+}
+
+roll_snap_pie <- function(df) {
+  df %>%
+    filter(!is.na(team), replace_na(offense_snaps, 0) > 0) %>%
+    group_by(player, team, position) %>%
+    summarise(
+      value = sum(offense_snaps, na.rm = TRUE),
+      team_off_snaps = sum(team_off_snaps, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(pct = safe_div(value, team_off_snaps))
+}
 
 # ---------------------------------------------------------------------------
 # Table builders
 # ---------------------------------------------------------------------------
-
 pass_catcher_table <- function(data, player_label = "Receiver", te = FALSE, dark = FALSE) {
   extra <- if (te) {
     list(
@@ -916,6 +1190,7 @@ rb_table <- function(data, dark = FALSE) {
       receptions = colDef(name = "Rec"),
       receiving_yards = colDef(name = "Rec Yds", format = colFormat(separators = TRUE)),
       receiving_td = colDef(name = "Rec TD"),
+      fumbles = colDef(name = "Fum", style = style_numeric(data$fumbles, "bad", dark = dark)),
       rush_first_downs = colDef(name = "Rush FD"),
       rush_fd_pct = colDef(name = "FD %", format = colFormat(percent = TRUE, digits = 0)),
       total_epa = colDef(name = "EPA", format = colFormat(digits = 1), style = style_numeric(data$total_epa, "value", dark = dark)),
@@ -974,7 +1249,6 @@ qb_table <- function(data, dark = FALSE) {
 # ---------------------------------------------------------------------------
 # Shiny app
 # ---------------------------------------------------------------------------
-
 slider_max <- function(x, floor_val) {
   x <- suppressWarnings(as.numeric(x))
   x <- x[is.finite(x)]
@@ -1073,7 +1347,7 @@ ui <- fluidPage(
   div(
     class = "title-header-banner",
     tags$h2("Fantasy Sports Pack 2026 Player Stats Tool"),
-    tags$p(paste(week_label, "| Data: nflreadr | PPR scoring"))
+    tags$p(textOutput("header_sub", inline = TRUE))
   ),
   
   sidebarLayout(
@@ -1086,33 +1360,49 @@ ui <- fluidPage(
         input_dark_mode(id = "color_mode")
       ),
       hr(),
+      radioButtons(
+        "scope",
+        "View",
+        choices = c("Season to date" = "season", "Single week" = "week"),
+        selected = "season"
+      ),
+      conditionalPanel(
+        condition = "input.scope == 'week'",
+        selectInput(
+          "week",
+          "Week",
+          choices = setNames(week_choices, paste("Week", week_choices)),
+          selected = max_week
+        ),
+        helpText("Week 2 will only include teams that have already played.")
+      ),
       selectInput("team", "Team", choices = c("All teams" = "ALL", all_teams), selected = "ALL"),
       conditionalPanel(
         condition = "input.pos_tab == 'WR'",
         sliderInput(
           "min_wr", "Minimum targets",
-          min = 0, max = slider_max(wr_stats$targets, 5), value = 1, step = 1
+          min = 0, max = slider_max(season_wr$targets, 5), value = 1, step = 1
         )
       ),
       conditionalPanel(
         condition = "input.pos_tab == 'TE'",
         sliderInput(
           "min_te", "Minimum targets",
-          min = 0, max = slider_max(te_stats$targets, 5), value = 1, step = 1
+          min = 0, max = slider_max(season_te$targets, 5), value = 1, step = 1
         )
       ),
       conditionalPanel(
         condition = "input.pos_tab == 'RB'",
         sliderInput(
           "min_rb", "Minimum carries",
-          min = 0, max = slider_max(rb_stats$carries, 10), value = 10, step = 1
+          min = 0, max = slider_max(season_rb$carries, 10), value = 10, step = 1
         )
       ),
       conditionalPanel(
         condition = "input.pos_tab == 'QB'",
         sliderInput(
           "min_qb", "Minimum pass attempts",
-          min = 0, max = slider_max(qb_stats$attempts, 10), value = 10, step = 1
+          min = 0, max = slider_max(season_qb_tbl$attempts, 10), value = 10, step = 1
         )
       ),
       conditionalPanel(
@@ -1128,16 +1418,16 @@ ui <- fluidPage(
       conditionalPanel(
         condition = "input.pos_tab == 'Snap Share'",
         downloadButton("snap_download", "Download plot"),
-        helpText("Pick one team. Slice size is offensive snap share.")
+        helpText("Pick one team. Slice size is offensive snap share of team snaps in the selected window. Unselected positions appear as Rest of team.")
       ),
       conditionalPanel(
         condition = "input.pos_tab == 'Target Share'",
         downloadButton("tgt_download", "Download plot"),
-        helpText("Pick one team. Slice size is target share.")
+        helpText("Pick one team. Slice size is PBP target share of team targets in the selected window. Unselected positions appear as Rest of team.")
       ),
       conditionalPanel(
         condition = "input.pos_tab != 'Snap Share' && input.pos_tab != 'Target Share'",
-        helpText("RZ = inside the 25. EZ = inside the 5. WR/TE Tgt % = player zone targets / team zone targets. Rec % = zone receptions / zone targets. RB Car % = player zone carries / team zone carries.")
+        helpText("RZ = inside the 25. EZ = inside the 5. Tgt % / Car % / Snap % use that player's team-week opportunities, then sum across the selected window. WR/TE FD % = receiving first downs / PBP targets.")
       )
     ),
     mainPanel(
@@ -1168,11 +1458,14 @@ ui <- fluidPage(
 )
 
 filter_team <- function(df, team) {
-  if (!identical(team, "ALL")) df <- df[df$team == team, , drop = FALSE]
+  if (!identical(team, "ALL") && "team" %in% names(df)) {
+    df <- df[df$team == team, , drop = FALSE]
+  }
   df
 }
 
 rerank <- function(df) {
+  if (!"rank" %in% names(df)) return(df)
   df$rank <- seq_len(nrow(df))
   df
 }
@@ -1182,20 +1475,68 @@ server <- function(input, output, session) {
     identical(input$color_mode, "dark")
   })
   
+  selected_weeks <- reactive({
+    if (identical(input$scope, "week")) {
+      wk <- suppressWarnings(as.integer(input$week))
+      if (!is.finite(wk)) wk <- max_week
+      wk
+    } else {
+      week_choices
+    }
+  })
+  
+  scope_label <- reactive({
+    if (identical(input$scope, "week")) {
+      paste("Week", input$week)
+    } else {
+      paste("Through Week", max_week)
+    }
+  })
+  
+  output$header_sub <- renderText({
+    paste(scope_label(), "| Data: nflreadr | PPR scoring")
+  })
+  
+  observeEvent(input$scope, {
+    if (identical(input$scope, "week")) {
+      updateSliderInput(session, "min_wr", value = 0)
+      updateSliderInput(session, "min_te", value = 0)
+      updateSliderInput(session, "min_rb", value = 1)
+      updateSliderInput(session, "min_qb", value = 1)
+    } else {
+      updateSliderInput(session, "min_wr", value = 1)
+      updateSliderInput(session, "min_te", value = 1)
+      updateSliderInput(session, "min_rb", value = 10)
+      updateSliderInput(session, "min_qb", value = 10)
+    }
+  }, ignoreInit = TRUE)
+  
+  skill_window <- reactive({
+    roll_skill(skill_week %>% filter(week %in% selected_weeks()))
+  })
+  
+  qb_window <- reactive({
+    roll_qb(qb_week %>% filter(week %in% selected_weeks()))
+  })
+  
   wr_f <- reactive({
-    df <- filter_team(wr_stats, input$team)
+    df <- shape_wr(skill_window())
+    df <- filter_team(df, input$team)
     rerank(df[df$targets >= input$min_wr, , drop = FALSE])
   })
   te_f <- reactive({
-    df <- filter_team(te_stats, input$team)
+    df <- shape_te(skill_window())
+    df <- filter_team(df, input$team)
     rerank(df[df$targets >= input$min_te, , drop = FALSE])
   })
   rb_f <- reactive({
-    df <- filter_team(rb_stats, input$team)
+    df <- shape_rb(skill_window())
+    df <- filter_team(df, input$team)
     rerank(df[df$carries >= input$min_rb, , drop = FALSE])
   })
   qb_f <- reactive({
-    df <- filter_team(qb_stats, input$team)
+    df <- shape_qb(qb_window())
+    df <- filter_team(df, input$team)
     rerank(df[df$attempts >= input$min_qb, , drop = FALSE])
   })
   
@@ -1212,16 +1553,44 @@ server <- function(input, output, session) {
     qb_table(qb_f(), dark = is_dark())
   })
   
+  tgt_pie_data <- reactive({
+    roll_tgt_pie(skill_week %>% filter(week %in% selected_weeks()))
+  })
+  
+  snap_pie_data <- reactive({
+    roll_snap_pie(snap_player_week %>% filter(week %in% selected_weeks()))
+  })
+  
   output$snap_pie <- renderPlot({
-    draw_snap_pie(input$team, input$pie_pos, dark = is_dark())
+    p <- share_pie_plot(
+      snap_pie_data(),
+      input$team, input$pie_pos, dark = is_dark(),
+      title_metric = "offensive snap share",
+      subtitle = "Slice size = share of team offensive snaps in the selected window.",
+      empty_noun = "offensive snap data",
+      scope_label = scope_label()
+    )
+    draw_share_pie(p, dark = is_dark())
   }, bg = "transparent")
   
   output$tgt_pie <- renderPlot({
-    draw_tgt_pie(input$team, input$pie_pos, dark = is_dark())
+    p <- share_pie_plot(
+      tgt_pie_data(),
+      input$team, input$pie_pos, dark = is_dark(),
+      title_metric = "target share",
+      subtitle = "Slice size = PBP target share of team targets in the selected window.",
+      empty_noun = "target data",
+      scope_label = scope_label()
+    )
+    draw_share_pie(p, dark = is_dark())
   }, bg = "transparent")
   
   pie_filename <- function(kind) {
-    week_bit <- if (is.finite(max_week)) paste0("week", max_week) else paste0(season)
+    week_bit <- if (identical(input$scope, "week")) {
+      paste0("week", input$week)
+    } else {
+      paste0("through_week", max_week)
+    }
     team_bit <- if (identical(input$team, "ALL")) "team" else input$team
     paste0(team_bit, "_", kind, "_", week_bit, ".png")
   }
@@ -1231,7 +1600,15 @@ server <- function(input, output, session) {
     content = function(file) {
       bg_col <- if (is_dark()) "#0b1220" else "#ffffff"
       grDevices::png(file, width = 1400, height = 1100, res = 140, bg = bg_col)
-      draw_snap_pie(input$team, input$pie_pos, dark = is_dark())
+      p <- share_pie_plot(
+        snap_pie_data(),
+        input$team, input$pie_pos, dark = is_dark(),
+        title_metric = "offensive snap share",
+        subtitle = "Slice size = share of team offensive snaps in the selected window.",
+        empty_noun = "offensive snap data",
+        scope_label = scope_label()
+      )
+      draw_share_pie(p, dark = is_dark())
       grDevices::dev.off()
     }
   )
@@ -1241,7 +1618,15 @@ server <- function(input, output, session) {
     content = function(file) {
       bg_col <- if (is_dark()) "#0b1220" else "#ffffff"
       grDevices::png(file, width = 1400, height = 1100, res = 140, bg = bg_col)
-      draw_tgt_pie(input$team, input$pie_pos, dark = is_dark())
+      p <- share_pie_plot(
+        tgt_pie_data(),
+        input$team, input$pie_pos, dark = is_dark(),
+        title_metric = "target share",
+        subtitle = "Slice size = PBP target share of team targets in the selected window.",
+        empty_noun = "target data",
+        scope_label = scope_label()
+      )
+      draw_share_pie(p, dark = is_dark())
       grDevices::dev.off()
     }
   )
