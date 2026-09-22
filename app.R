@@ -73,6 +73,8 @@ color_scale <- function(x, palette = "good", dark = FALSE) {
       good  = colour_ramp(c("#1e3a5f", "#2563eb", "#93c5fd")),
       value = colour_ramp(c("#7f1d1d", "#a16207", "#166534")),
       bad   = colour_ramp(c("#1e293b", "#7f1d1d", "#ef4444")),
+      espn_fp = colour_ramp(c("#1e1b24", "#6b2d73", "#E03FD8")),
+      espn_forp = colour_ramp(c("#FF4040", "#1e293b", "#40C040")),
       colour_ramp(c("#1e293b", "#475569"))
     )
   } else {
@@ -81,6 +83,8 @@ color_scale <- function(x, palette = "good", dark = FALSE) {
       good  = colour_ramp(c("#f1f5f9", "#93c5fd", "#1d4ed8")),
       value = colour_ramp(c("#ef4444", "#fef3c7", "#16a34a")),
       bad   = colour_ramp(c("#f8fafc", "#fecaca", "#b91c1c")),
+      espn_fp = colour_ramp(c("#f7f7f7", "#e7b6e4", "#E03FD8")),
+      espn_forp = colour_ramp(c("#FF4040", "#FFFFFF", "#40C040")),
       colour_ramp(c("#f8fafc", "#cbd5e1"))
     )
   }
@@ -93,6 +97,28 @@ color_scale <- function(x, palette = "good", dark = FALSE) {
 style_numeric <- function(vec, palette = "good", dark = FALSE) {
   colors <- color_scale(vec, palette, dark = dark)
   text_col <- if (dark) "#f8fafc" else "#0f172a"
+  function(value, index) {
+    list(background = colors[[index]], color = text_col, fontWeight = 600)
+  }
+}
+
+# FORP is diverging around 0 so the white/neutral stop stays at zero.
+style_espn_forp <- function(vec, dark = FALSE) {
+  na_color <- if (dark) "#1e293b" else "#f4f4f4"
+  text_col <- if (dark) "#f8fafc" else "#0f172a"
+  x <- suppressWarnings(as.numeric(vec))
+  lim <- suppressWarnings(max(abs(x), na.rm = TRUE))
+  if (!is.finite(lim) || lim == 0) {
+    colors <- ifelse(is.na(x), na_color, if (dark) "#1e293b" else "#FFFFFF")
+  } else {
+    pal <- if (dark) {
+      colour_ramp(c("#FF4040", "#1e293b", "#40C040"))
+    } else {
+      colour_ramp(c("#FF4040", "#FFFFFF", "#40C040"))
+    }
+    colors <- pal(rescale(x, to = c(0, 1), from = c(-lim, lim)))
+    colors[is.na(x)] <- na_color
+  }
   function(value, index) {
     list(background = colors[[index]], color = text_col, fontWeight = 600)
   }
@@ -255,6 +281,38 @@ player_week <- safe_load(
   tibble(),
   "load_player_stats()"
 )
+
+ff_opp_week <- safe_load(
+  {
+    raw <- load_ff_opportunity(
+      seasons = season,
+      stat_type = "weekly",
+      model_version = "latest"
+    )
+    raw %>%
+      select(any_of(c(
+        "player_id", "week",
+        "receptions_exp",
+        "rec_yards_gained_exp", "rush_yards_gained_exp", "pass_yards_gained_exp",
+        "rec_touchdown_exp", "rush_touchdown_exp", "pass_touchdown_exp",
+        "pass_fantasy_points_exp", "rush_fantasy_points_exp", "rec_fantasy_points_exp",
+        "total_fantasy_points_exp"
+      )))
+  },
+  tibble(player_id = character(), week = integer()),
+  "load_ff_opportunity()"
+)
+
+exp_cols <- c(
+  "receptions_exp",
+  "rec_yards_gained_exp", "rush_yards_gained_exp", "pass_yards_gained_exp",
+  "rec_touchdown_exp", "rush_touchdown_exp", "pass_touchdown_exp",
+  "pass_fantasy_points_exp", "rush_fantasy_points_exp", "rec_fantasy_points_exp",
+  "total_fantasy_points_exp"
+)
+for (nm in exp_cols) {
+  if (!nm %in% names(ff_opp_week)) ff_opp_week[[nm]] <- 0
+}
 
 rosters_week <- safe_load(
   {
@@ -729,6 +787,26 @@ official_week <- if (nrow(player_week) > 0) {
       receiving_epa = coalesce(receiving_epa, 0),
       rushing_epa = coalesce(rushing_epa, 0),
       passing_epa = coalesce(passing_epa, 0)
+    ) %>%
+    left_join(ff_opp_week, by = c("player_id", "week")) %>%
+    mutate(
+      receptions_exp = replace_na(coalesce(receptions_exp, 0), 0),
+      rec_yards_gained_exp = replace_na(coalesce(rec_yards_gained_exp, 0), 0),
+      rush_yards_gained_exp = replace_na(coalesce(rush_yards_gained_exp, 0), 0),
+      pass_yards_gained_exp = replace_na(coalesce(pass_yards_gained_exp, 0), 0),
+      rec_touchdown_exp = replace_na(coalesce(rec_touchdown_exp, 0), 0),
+      rush_touchdown_exp = replace_na(coalesce(rush_touchdown_exp, 0), 0),
+      pass_touchdown_exp = replace_na(coalesce(pass_touchdown_exp, 0), 0),
+      pass_fantasy_points_exp = replace_na(coalesce(pass_fantasy_points_exp, 0), 0),
+      rush_fantasy_points_exp = replace_na(coalesce(rush_fantasy_points_exp, 0), 0),
+      rec_fantasy_points_exp = replace_na(coalesce(rec_fantasy_points_exp, 0), 0),
+      total_expected_points = replace_na(
+        coalesce(
+          total_fantasy_points_exp,
+          pass_fantasy_points_exp + rush_fantasy_points_exp + rec_fantasy_points_exp
+        ),
+        0
+      )
     )
 } else {
   tibble(
@@ -742,7 +820,14 @@ official_week <- if (nrow(player_week) > 0) {
     passing_td = numeric(), interceptions = numeric(), passing_air_yards = numeric(),
     sacks = numeric(), fumbles = numeric(), fumbles_lost = numeric(),
     official_ppr = numeric(), official_fp = numeric(),
-    receiving_epa = numeric(), rushing_epa = numeric(), passing_epa = numeric()
+    receiving_epa = numeric(), rushing_epa = numeric(), passing_epa = numeric(),
+    receptions_exp = numeric(), rec_yards_gained_exp = numeric(),
+    rush_yards_gained_exp = numeric(), pass_yards_gained_exp = numeric(),
+    rec_touchdown_exp = numeric(), rush_touchdown_exp = numeric(),
+    pass_touchdown_exp = numeric(),
+    pass_fantasy_points_exp = numeric(), rush_fantasy_points_exp = numeric(),
+    rec_fantasy_points_exp = numeric(), total_fantasy_points_exp = numeric(),
+    total_expected_points = numeric()
   )
 }
 
@@ -854,7 +939,16 @@ skill_week <- official_week %>%
     team_rz_carries = replace_na(team_rz_carries, 0),
     team_ez_carries = replace_na(team_ez_carries, 0),
     offense_snaps = replace_na(offense_snaps, 0),
-    team_off_snaps = replace_na(team_off_snaps, 0)
+    team_off_snaps = replace_na(team_off_snaps, 0),
+    receptions_exp = replace_na(receptions_exp, 0),
+    rec_yards_gained_exp = replace_na(rec_yards_gained_exp, 0),
+    rush_yards_gained_exp = replace_na(rush_yards_gained_exp, 0),
+    rec_touchdown_exp = replace_na(rec_touchdown_exp, 0),
+    rush_touchdown_exp = replace_na(rush_touchdown_exp, 0),
+    rec_fantasy_points_exp = replace_na(rec_fantasy_points_exp, 0),
+    rush_fantasy_points_exp = replace_na(rush_fantasy_points_exp, 0),
+    pass_fantasy_points_exp = replace_na(pass_fantasy_points_exp, 0),
+    total_expected_points = replace_na(total_expected_points, 0)
   )
 
 qb_week <- official_week %>%
@@ -886,7 +980,15 @@ qb_week <- official_week %>%
     team_off_snaps = replace_na(team_off_snaps, 0),
     carries = replace_na(carries, 0),
     rush_epa_pbp = replace_na(rush_epa_pbp, 0),
-    pass_epa_pbp = replace_na(pass_epa_pbp, 0)
+    pass_epa_pbp = replace_na(pass_epa_pbp, 0),
+    pass_yards_gained_exp = replace_na(pass_yards_gained_exp, 0),
+    rush_yards_gained_exp = replace_na(rush_yards_gained_exp, 0),
+    pass_touchdown_exp = replace_na(pass_touchdown_exp, 0),
+    rush_touchdown_exp = replace_na(rush_touchdown_exp, 0),
+    pass_fantasy_points_exp = replace_na(pass_fantasy_points_exp, 0),
+    rush_fantasy_points_exp = replace_na(rush_fantasy_points_exp, 0),
+    rec_fantasy_points_exp = replace_na(rec_fantasy_points_exp, 0),
+    total_expected_points = replace_na(total_expected_points, 0)
   )
 
 # ---------------------------------------------------------------------------
@@ -937,6 +1039,15 @@ roll_skill <- function(df) {
       team_ez_carries = sum(team_ez_carries, na.rm = TRUE),
       offense_snaps = sum(offense_snaps, na.rm = TRUE),
       team_off_snaps = sum(team_off_snaps, na.rm = TRUE),
+      receptions_exp = sum(receptions_exp, na.rm = TRUE),
+      rec_yards_gained_exp = sum(rec_yards_gained_exp, na.rm = TRUE),
+      rush_yards_gained_exp = sum(rush_yards_gained_exp, na.rm = TRUE),
+      rec_touchdown_exp = sum(rec_touchdown_exp, na.rm = TRUE),
+      rush_touchdown_exp = sum(rush_touchdown_exp, na.rm = TRUE),
+      rec_fantasy_points_exp = sum(rec_fantasy_points_exp, na.rm = TRUE),
+      rush_fantasy_points_exp = sum(rush_fantasy_points_exp, na.rm = TRUE),
+      pass_fantasy_points_exp = sum(pass_fantasy_points_exp, na.rm = TRUE),
+      total_expected_points = sum(total_expected_points, na.rm = TRUE),
       .groups = "drop"
     ) %>%
     left_join(team_meta, by = c("team" = "team_abbr")) %>%
@@ -959,7 +1070,11 @@ roll_skill <- function(df) {
       total_td = replace_na(receiving_td, 0) + replace_na(rushing_td, 0),
       offense_pct = safe_div(offense_snaps, team_off_snaps),
       total_fp = coalesce(official_ppr, 0),
-      fp_g = safe_div(total_fp, games_played)
+      fp_g = safe_div(total_fp, games_played),
+      rec_exp = receptions_exp,
+      yds_exp = rec_yards_gained_exp + rush_yards_gained_exp,
+      tds_exp = rec_touchdown_exp + rush_touchdown_exp,
+      forp = total_fp - total_expected_points
     ) %>%
     filter(!is.na(player_name))
 }
@@ -985,6 +1100,8 @@ roll_qb <- function(df) {
       carries = sum(carries, na.rm = TRUE),
       rushing_yards = sum(rushing_yards, na.rm = TRUE),
       rushing_td = sum(rushing_td, na.rm = TRUE),
+      fumbles = sum(fumbles, na.rm = TRUE),
+      fumbles_lost = sum(fumbles_lost, na.rm = TRUE),
       official_ppr = sum(official_ppr, na.rm = TRUE),
       official_fp = sum(official_fp, na.rm = TRUE),
       passing_epa = sum(passing_epa, na.rm = TRUE),
@@ -1000,6 +1117,14 @@ roll_qb <- function(df) {
       cpoe_n = sum(cpoe_n, na.rm = TRUE),
       offense_snaps = sum(offense_snaps, na.rm = TRUE),
       team_off_snaps = sum(team_off_snaps, na.rm = TRUE),
+      pass_yards_gained_exp = sum(pass_yards_gained_exp, na.rm = TRUE),
+      rush_yards_gained_exp = sum(rush_yards_gained_exp, na.rm = TRUE),
+      pass_touchdown_exp = sum(pass_touchdown_exp, na.rm = TRUE),
+      rush_touchdown_exp = sum(rush_touchdown_exp, na.rm = TRUE),
+      pass_fantasy_points_exp = sum(pass_fantasy_points_exp, na.rm = TRUE),
+      rush_fantasy_points_exp = sum(rush_fantasy_points_exp, na.rm = TRUE),
+      rec_fantasy_points_exp = sum(rec_fantasy_points_exp, na.rm = TRUE),
+      total_expected_points = sum(total_expected_points, na.rm = TRUE),
       .groups = "drop"
     ) %>%
     left_join(team_meta, by = c("team" = "team_abbr")) %>%
@@ -1011,7 +1136,11 @@ roll_qb <- function(df) {
       total_epa = coalesce(pass_epa_pbp, passing_epa, 0) + coalesce(rush_epa_pbp, rushing_epa, 0),
       total_fp = coalesce(official_ppr, official_fp, 0),
       fp_g = safe_div(total_fp, games_played),
-      offense_pct = safe_div(offense_snaps, team_off_snaps)
+      offense_pct = safe_div(offense_snaps, team_off_snaps),
+      pass_yds_exp = pass_yards_gained_exp,
+      rush_yds_exp = rush_yards_gained_exp,
+      tds_exp = pass_touchdown_exp + rush_touchdown_exp,
+      forp = total_fp - total_expected_points
     ) %>%
     filter(!is.na(player_name))
 }
@@ -1072,6 +1201,33 @@ shape_qb <- function(df) {
       carries, rushing_yards, rushing_td,
       rz_pass_att, rz_pass_td, ez_pass_att, ez_pass_td,
       total_epa, fp_g, total_fp
+    )
+}
+
+shape_xfp_skill <- function(df, pos) {
+  pos_want <- if (identical(pos, "RB")) c("RB", "FB", "HB") else pos
+  df %>%
+    filter(position %in% pos_want) %>%
+    arrange(desc(total_fp), desc(forp)) %>%
+    mutate(rank = row_number()) %>%
+    select(
+      rank, player_id, player_name, headshot_url, team, team_wordmark, team_logo_espn,
+      games_played, targets, receptions, carries, receiving_yards, rushing_yards,
+      receiving_td, rushing_td, fumbles, total_fp,
+      rec_exp, yds_exp, tds_exp, total_expected_points, forp
+    )
+}
+
+shape_xfp_qb <- function(df) {
+  df %>%
+    filter(position == "QB", attempts > 0 | rushing_yards != 0) %>%
+    arrange(desc(total_fp), desc(forp)) %>%
+    mutate(rank = row_number()) %>%
+    select(
+      rank, player_id, player_name, headshot_url, team, team_wordmark, team_logo_espn,
+      games_played, passing_yards, rushing_yards, passing_td, rushing_td,
+      interceptions, fumbles = fumbles_lost, total_fp,
+      pass_yds_exp, rush_yds_exp, tds_exp, total_expected_points, forp
     )
 }
 
@@ -1246,6 +1402,84 @@ qb_table <- function(data, dark = FALSE) {
   )
 }
 
+xfp_skill_table <- function(data, player_label = "Player", show_carries = FALSE, dark = FALSE) {
+  extra <- if (show_carries) {
+    list(carries = colDef(name = "Car"))
+  } else {
+    list()
+  }
+  
+  cols <- c(
+    hidden_meta_cols(),
+    list(
+      rank = colDef(name = "Rk", minWidth = 48, filterable = FALSE),
+      player_name = colDef(name = player_label, align = "left", minWidth = 210, sticky = "left", cell = player_cell(data), style = zebra_style(dark)),
+      team = colDef(name = "Team", minWidth = 84, cell = team_cell(data), style = zebra_style(dark)),
+      games_played = colDef(name = "G", minWidth = 46)
+    ),
+    extra,
+    list(
+      targets = colDef(name = "Tgt"),
+      receptions = colDef(name = "Rec"),
+      receiving_yards = colDef(name = "Rec Yds", format = colFormat(separators = TRUE)),
+      rushing_yards = colDef(name = "Rush Yds", format = colFormat(separators = TRUE)),
+      receiving_td = colDef(name = "Rec TD"),
+      rushing_td = colDef(name = "Rush TD"),
+      fumbles = colDef(name = "Fum"),
+      total_fp = colDef(name = "PPR", format = colFormat(digits = 1), style = style_numeric(data$total_fp, "espn_fp", dark = dark)),
+      rec_exp = colDef(name = "xRec", format = colFormat(digits = 1)),
+      yds_exp = colDef(name = "xYds", format = colFormat(digits = 0, separators = TRUE)),
+      tds_exp = colDef(name = "xTD", format = colFormat(digits = 1)),
+      total_expected_points = colDef(name = "xFP", format = colFormat(digits = 1), style = style_numeric(data$total_expected_points, "espn_fp", dark = dark)),
+      forp = colDef(name = "FORP", format = colFormat(digits = 1), style = style_espn_forp(data$forp, dark = dark))
+    )
+  )
+  
+  base_reactable(
+    data,
+    cols,
+    column_groups = list(
+      colGroup(name = "Actual", columns = c("receptions", "receiving_yards", "rushing_yards", "receiving_td", "rushing_td", "fumbles", "total_fp")),
+      colGroup(name = "Expected", columns = c("rec_exp", "yds_exp", "tds_exp", "total_expected_points", "forp"))
+    ),
+    dark = dark
+  )
+}
+
+xfp_qb_table <- function(data, dark = FALSE) {
+  cols <- c(
+    hidden_meta_cols(),
+    list(
+      rank = colDef(name = "Rk", minWidth = 48, filterable = FALSE),
+      player_name = colDef(name = "Quarterback", align = "left", minWidth = 210, sticky = "left", cell = player_cell(data), style = zebra_style(dark)),
+      team = colDef(name = "Team", minWidth = 84, cell = team_cell(data), style = zebra_style(dark)),
+      games_played = colDef(name = "G", minWidth = 46),
+      passing_yards = colDef(name = "Pass Yds", format = colFormat(separators = TRUE)),
+      rushing_yards = colDef(name = "Rush Yds", format = colFormat(separators = TRUE)),
+      passing_td = colDef(name = "Pass TD"),
+      rushing_td = colDef(name = "Rush TD"),
+      interceptions = colDef(name = "INT"),
+      fumbles = colDef(name = "Fum"),
+      total_fp = colDef(name = "PPR", format = colFormat(digits = 1), style = style_numeric(data$total_fp, "espn_fp", dark = dark)),
+      pass_yds_exp = colDef(name = "xPass Yds", format = colFormat(digits = 0, separators = TRUE)),
+      rush_yds_exp = colDef(name = "xRush Yds", format = colFormat(digits = 0, separators = TRUE)),
+      tds_exp = colDef(name = "xTD", format = colFormat(digits = 1)),
+      total_expected_points = colDef(name = "xFP", format = colFormat(digits = 1), style = style_numeric(data$total_expected_points, "espn_fp", dark = dark)),
+      forp = colDef(name = "FORP", format = colFormat(digits = 1), style = style_espn_forp(data$forp, dark = dark))
+    )
+  )
+  
+  base_reactable(
+    data,
+    cols,
+    column_groups = list(
+      colGroup(name = "Actual", columns = c("passing_yards", "rushing_yards", "passing_td", "rushing_td", "interceptions", "fumbles", "total_fp")),
+      colGroup(name = "Expected", columns = c("pass_yds_exp", "rush_yds_exp", "tds_exp", "total_expected_points", "forp"))
+    ),
+    dark = dark
+  )
+}
+
 # ---------------------------------------------------------------------------
 # Shiny app
 # ---------------------------------------------------------------------------
@@ -1378,28 +1612,28 @@ ui <- fluidPage(
       ),
       selectInput("team", "Team", choices = c("All teams" = "ALL", all_teams), selected = "ALL"),
       conditionalPanel(
-        condition = "input.pos_tab == 'WR'",
+        condition = "input.pos_tab == 'WR' || input.pos_tab == 'WR xFP'",
         sliderInput(
           "min_wr", "Minimum targets",
           min = 0, max = slider_max(season_wr$targets, 5), value = 1, step = 1
         )
       ),
       conditionalPanel(
-        condition = "input.pos_tab == 'TE'",
+        condition = "input.pos_tab == 'TE' || input.pos_tab == 'TE xFP'",
         sliderInput(
           "min_te", "Minimum targets",
           min = 0, max = slider_max(season_te$targets, 5), value = 1, step = 1
         )
       ),
       conditionalPanel(
-        condition = "input.pos_tab == 'RB'",
+        condition = "input.pos_tab == 'RB' || input.pos_tab == 'RB xFP'",
         sliderInput(
           "min_rb", "Minimum carries",
           min = 0, max = slider_max(season_rb$carries, 10), value = 10, step = 1
         )
       ),
       conditionalPanel(
-        condition = "input.pos_tab == 'QB'",
+        condition = "input.pos_tab == 'QB' || input.pos_tab == 'QB xFP'",
         sliderInput(
           "min_qb", "Minimum pass attempts",
           min = 0, max = slider_max(season_qb_tbl$attempts, 10), value = 10, step = 1
@@ -1426,7 +1660,11 @@ ui <- fluidPage(
         helpText("Pick one team. Slice size is PBP target share of team targets in the selected window. Unselected positions appear as Rest of team.")
       ),
       conditionalPanel(
-        condition = "input.pos_tab != 'Snap Share' && input.pos_tab != 'Target Share'",
+        condition = "input.pos_tab == 'WR xFP' || input.pos_tab == 'TE xFP' || input.pos_tab == 'RB xFP' || input.pos_tab == 'QB xFP'",
+        helpText("FORP = actual PPR minus ffopportunity expected fantasy points (xFP). Expected rec/yds/TDs come from load_ff_opportunity() package provided by nflreadr. Same week / season window as the other tabs.")
+      ),
+      conditionalPanel(
+        condition = "input.pos_tab != 'Snap Share' && input.pos_tab != 'Target Share' && input.pos_tab != 'WR xFP' && input.pos_tab != 'TE xFP' && input.pos_tab != 'RB xFP' && input.pos_tab != 'QB xFP'",
         helpText("RZ = inside the 25. EZ = inside the 5. Tgt % / Car % / Snap % use that player's team-week opportunities, then sum across the selected window. WR/TE FD % = receiving first downs / PBP targets.")
       )
     ),
@@ -1434,10 +1672,14 @@ ui <- fluidPage(
       width = 9,
       tabsetPanel(
         id = "pos_tab",
+        tabPanel("QB", reactableOutput("qb_table")),
+        tabPanel("RB", reactableOutput("rb_table")),
         tabPanel("WR", reactableOutput("wr_table")),
         tabPanel("TE", reactableOutput("te_table")),
-        tabPanel("RB", reactableOutput("rb_table")),
-        tabPanel("QB", reactableOutput("qb_table")),
+        tabPanel("QB xFP", reactableOutput("qb_xfp_table")),
+        tabPanel("RB xFP", reactableOutput("rb_xfp_table")),
+        tabPanel("WR xFP", reactableOutput("wr_xfp_table")),
+        tabPanel("TE xFP", reactableOutput("te_xfp_table")),
         tabPanel(
           "Snap Share",
           br(),
@@ -1551,6 +1793,40 @@ server <- function(input, output, session) {
   })
   output$qb_table <- renderReactable({
     qb_table(qb_f(), dark = is_dark())
+  })
+  
+  wr_xfp_f <- reactive({
+    df <- shape_xfp_skill(skill_window(), "WR")
+    df <- filter_team(df, input$team)
+    rerank(df[df$targets >= input$min_wr, , drop = FALSE])
+  })
+  te_xfp_f <- reactive({
+    df <- shape_xfp_skill(skill_window(), "TE")
+    df <- filter_team(df, input$team)
+    rerank(df[df$targets >= input$min_te, , drop = FALSE])
+  })
+  rb_xfp_f <- reactive({
+    df <- shape_xfp_skill(skill_window(), "RB")
+    df <- filter_team(df, input$team)
+    rerank(df[df$carries >= input$min_rb, , drop = FALSE])
+  })
+  qb_xfp_f <- reactive({
+    df <- shape_xfp_qb(qb_window() %>% filter(attempts >= input$min_qb | rushing_yards != 0))
+    df <- filter_team(df, input$team)
+    rerank(df)
+  })
+  
+  output$wr_xfp_table <- renderReactable({
+    xfp_skill_table(wr_xfp_f(), "Receiver", show_carries = FALSE, dark = is_dark())
+  })
+  output$te_xfp_table <- renderReactable({
+    xfp_skill_table(te_xfp_f(), "Tight End", show_carries = FALSE, dark = is_dark())
+  })
+  output$rb_xfp_table <- renderReactable({
+    xfp_skill_table(rb_xfp_f(), "Running Back", show_carries = TRUE, dark = is_dark())
+  })
+  output$qb_xfp_table <- renderReactable({
+    xfp_qb_table(qb_xfp_f(), dark = is_dark())
   })
   
   tgt_pie_data <- reactive({
