@@ -642,6 +642,34 @@
         "Built": "R 4.5.2; ; 2026-04-22 09:41:08 UTC; unix"
       }
     },
+    "ggtext": {
+      "Source": "CRAN",
+      "Repository": "https://cran.rstudio.com",
+      "description": {
+        "Package": "ggtext",
+        "Type": "Package",
+        "Title": "Improved Text Rendering Support for 'ggplot2'",
+        "Version": "0.1.2",
+        "Authors@R": "\n    c(\n      person(\n        given = \"Claus O.\",\n        family = \"Wilke\",\n        role = c(\"aut\"),\n        email = \"wilke@austin.utexas.edu\",\n        comment = c(ORCID = \"0000-0002-7470-9261\")\n      ),\n      person(\n        given = \"Brenton M.\",\n        family = \"Wiernik\",\n        role = c(\"aut\", \"cre\"),\n        email = \"brenton@wiernik.org\",\n        comment = c(ORCID = \"0000-0001-9560-6336\", Twitter = \"@bmwiernik\")\n      )\n    )",
+        "Description": "A 'ggplot2' extension that enables the rendering of\n    complex formatted plot labels (titles, subtitles, facet labels,\n    axis labels, etc.). Text boxes with automatic word wrap are also\n    supported.",
+        "URL": "https://wilkelab.org/ggtext/",
+        "BugReports": "https://github.com/wilkelab/ggtext/issues",
+        "License": "GPL-2",
+        "Depends": "R (>= 3.5)",
+        "Imports": "ggplot2 (>= 3.3.0), grid, gridtext, rlang, scales",
+        "Suggests": "cowplot, dplyr, glue, knitr, rmarkdown, testthat, vdiffr",
+        "Encoding": "UTF-8",
+        "RoxygenNote": "7.1.1",
+        "VignetteBuilder": "knitr",
+        "NeedsCompilation": "no",
+        "Packaged": "2022-09-15 13:50:50 UTC; brentonw",
+        "Author": "Claus O. Wilke [aut] (<https://orcid.org/0000-0002-7470-9261>),\n  Brenton M. Wiernik [aut, cre] (<https://orcid.org/0000-0001-9560-6336>,\n    @bmwiernik)",
+        "Maintainer": "Brenton M. Wiernik <brenton@wiernik.org>",
+        "Repository": "CRAN",
+        "Date/Publication": "2022-09-16 11:36:07 UTC",
+        "Built": "R 4.5.0; ; 2025-04-01 23:39:15 UTC; unix"
+      }
+    },
     "glue": {
       "Source": "CRAN",
       "Repository": "https://cran.rstudio.com",
@@ -672,6 +700,35 @@
         "Date/Publication": "2026-04-17 05:11:01 UTC",
         "Built": "R 4.5.2; aarch64-apple-darwin20; 2026-04-20 23:19:49 UTC; unix",
         "Archs": "glue.so.dSYM"
+      }
+    },
+    "gridtext": {
+      "Source": "CRAN",
+      "Repository": "https://cran.rstudio.com",
+      "description": {
+        "Package": "gridtext",
+        "Type": "Package",
+        "Title": "Improved Text Rendering Support for 'Grid' Graphics",
+        "Version": "0.1.6",
+        "Authors@R": "\n    c(\n      person(\n        given = \"Claus O.\",\n        family = \"Wilke\",\n        role = c(\"aut\"),\n        email = \"wilke@austin.utexas.edu\",\n        comment = c(ORCID = \"0000-0002-7470-9261\")\n      ),\n      person(\n        given = \"Brenton M.\",\n        family = \"Wiernik\",\n        role = c(\"aut\", \"cre\"),\n        email = \"brenton@wiernik.org\",\n        comment = c(ORCID = \"0000-0001-9560-6336\", Twitter = \"@bmwiernik\")\n      )\n    )",
+        "Description": "Provides support for rendering of formatted text using 'grid' graphics. Text can be\n    formatted via a minimal subset of 'Markdown', 'HTML', and inline 'CSS' directives, and it can be\n    rendered both with and without word wrap.",
+        "URL": "https://wilkelab.org/gridtext/",
+        "BugReports": "https://github.com/wilkelab/gridtext/issues",
+        "License": "MIT + file LICENSE",
+        "Depends": "R (>= 3.5)",
+        "Imports": "curl, grid, grDevices, markdown, rlang, Rcpp, png, jpeg,\nstringr, xml2",
+        "Suggests": "covr, knitr, rmarkdown, testthat, vdiffr",
+        "LinkingTo": "Rcpp",
+        "Encoding": "UTF-8",
+        "RoxygenNote": "7.1.1",
+        "NeedsCompilation": "yes",
+        "Packaged": "2026-02-18 22:56:00 UTC; brentonw",
+        "Author": "Claus O. Wilke [aut] (ORCID: <https://orcid.org/0000-0002-7470-9261>),\n  Brenton M. Wiernik [aut, cre] (ORCID:\n    <https://orcid.org/0000-0001-9560-6336>, Twitter: @bmwiernik)",
+        "Maintainer": "Brenton M. Wiernik <brenton@wiernik.org>",
+        "Repository": "CRAN",
+        "Date/Publication": "2026-02-19 06:10:21 UTC",
+        "Built": "R 4.5.2; aarch64-apple-darwin20; 2026-02-19 06:20:31 UTC; unix",
+        "Archs": "gridtext.so.dSYM"
       }
     },
     "gtable": {
@@ -858,6 +915,30 @@
         "Archs": "isoband.so.dSYM"
       }
     },
+    "jpeg": {
+      "Source": "CRAN",
+      "Repository": "https://cran.rstudio.com",
+      "description": {
+        "Package": "jpeg",
+        "Version": "0.1-11",
+        "Title": "Read and write JPEG images",
+        "Author": "Simon Urbanek [aut, cre, cph] (https://urbanek.org,\n    <https://orcid.org/0000-0003-2297-1732>)",
+        "Authors@R": "person(\"Simon\", \"Urbanek\", role=c(\"aut\",\"cre\",\"cph\"), email=\"Simon.Urbanek@r-project.org\", comment=c(\"https://urbanek.org\", ORCID=\"0000-0003-2297-1732\"))",
+        "Maintainer": "Simon Urbanek <Simon.Urbanek@r-project.org>",
+        "Depends": "R (>= 2.9.0)",
+        "Description": "This package provides an easy and simple way to read, write and display bitmap images stored in the JPEG format. It can read and write both files and in-memory raw vectors.",
+        "License": "GPL-2 | GPL-3",
+        "SystemRequirements": "libjpeg",
+        "URL": "https://www.rforge.net/jpeg/",
+        "BugReports": "https://github.com/s-u/jpeg/issues",
+        "NeedsCompilation": "yes",
+        "Packaged": "2025-03-21 03:05:05 UTC; rforge",
+        "Repository": "CRAN",
+        "Date/Publication": "2025-03-21 15:37:18 UTC",
+        "Built": "R 4.5.0; aarch64-apple-darwin20; 2025-03-31 22:03:54 UTC; unix",
+        "Archs": "jpeg.so.dSYM"
+      }
+    },
     "jquerylib": {
       "Source": "CRAN",
       "Repository": "https://cran.rstudio.com",
@@ -1024,6 +1105,34 @@
         "Built": "R 4.5.2; ; 2026-01-08 12:03:10 UTC; unix"
       }
     },
+    "litedown": {
+      "Source": "CRAN",
+      "Repository": "https://cran.rstudio.com",
+      "description": {
+        "Package": "litedown",
+        "Type": "Package",
+        "Title": "A Lightweight Version of R Markdown",
+        "Version": "0.9",
+        "Authors@R": "c(\n    person(\"Yihui\", \"Xie\", role = c(\"aut\", \"cre\"), email = \"xie@yihui.name\", comment = c(ORCID = \"0000-0003-0645-5666\", URL = \"https://yihui.org\")),\n    person(\"Tim\", \"Taylor\", role = \"ctb\", comment = c(ORCID = \"0000-0002-8587-7113\")),\n    person()\n    )",
+        "Description": "Render R Markdown to Markdown (without using 'knitr'), and Markdown\n    to lightweight HTML or 'LaTeX' documents with the 'commonmark' package (instead\n    of 'Pandoc'). Some missing Markdown features in 'commonmark' are also\n    supported, such as raw HTML or 'LaTeX' blocks, 'LaTeX' math, superscripts,\n    subscripts, footnotes, element attributes, and appendices,\n    but not all 'Pandoc' Markdown features are (or will be) supported. With\n    additional JavaScript and CSS, you can also create HTML slides and articles.\n    This package can be viewed as a trimmed-down version of R Markdown and\n    'knitr'. It does not aim at rich Markdown features or a large variety of\n    output formats (the primary formats are HTML and 'LaTeX'). Book and website\n    projects of multiple input documents are also supported.",
+        "Depends": "R (>= 3.2.0)",
+        "Imports": "utils, commonmark (>= 2.0.0), xfun (>= 0.55)",
+        "Suggests": "rbibutils, rstudioapi, tinytex",
+        "License": "MIT + file LICENSE",
+        "URL": "https://github.com/yihui/litedown",
+        "BugReports": "https://github.com/yihui/litedown/issues",
+        "VignetteBuilder": "litedown",
+        "RoxygenNote": "7.3.3",
+        "Encoding": "UTF-8",
+        "NeedsCompilation": "no",
+        "Packaged": "2025-12-18 16:42:41 UTC; yihui",
+        "Author": "Yihui Xie [aut, cre] (ORCID: <https://orcid.org/0000-0003-0645-5666>,\n    URL: https://yihui.org),\n  Tim Taylor [ctb] (ORCID: <https://orcid.org/0000-0002-8587-7113>)",
+        "Maintainer": "Yihui Xie <xie@yihui.name>",
+        "Repository": "CRAN",
+        "Date/Publication": "2025-12-18 17:50:02 UTC",
+        "Built": "R 4.5.2; ; 2025-12-19 08:52:16 UTC; unix"
+      }
+    },
     "magick": {
       "Source": "CRAN",
       "Repository": "https://cran.rstudio.com",
@@ -1084,6 +1193,33 @@
         "Date/Publication": "2026-04-04 08:00:02 UTC",
         "Built": "R 4.5.2; aarch64-apple-darwin20; 2026-04-04 10:13:02 UTC; unix",
         "Archs": "magrittr.so.dSYM"
+      }
+    },
+    "markdown": {
+      "Source": "CRAN",
+      "Repository": "https://cran.rstudio.com",
+      "description": {
+        "Package": "markdown",
+        "Type": "Package",
+        "Title": "Render Markdown with 'commonmark'",
+        "Version": "2.0",
+        "Authors@R": "c(\n   person(\"Yihui\", \"Xie\", role = c(\"aut\", \"cre\"), email = \"xie@yihui.name\", comment = c(ORCID = \"0000-0003-0645-5666\")),\n   person(\"JJ\", \"Allaire\", role = \"aut\"),\n   person(\"Jeffrey\", \"Horner\", role = \"aut\"),\n   person(\"Henrik\", \"Bengtsson\", role = \"ctb\"),\n   person(\"Jim\", \"Hester\", role = \"ctb\"),\n   person(\"Yixuan\", \"Qiu\", role = \"ctb\"),\n   person(\"Kohske\", \"Takahashi\", role = \"ctb\"),\n   person(\"Adam\", \"November\", role = \"ctb\"),\n   person(\"Nacho\", \"Caballero\", role = \"ctb\"),\n   person(\"Jeroen\", \"Ooms\", role = \"ctb\"),\n   person(\"Thomas\", \"Leeper\", role = \"ctb\"),\n   person(\"Joe\", \"Cheng\", role = \"ctb\"),\n   person(\"Andrzej\", \"Oles\", role = \"ctb\"),\n   person(given = \"Posit Software, PBC\", role = c(\"cph\", \"fnd\"))\n   )",
+        "Description": "Render Markdown to full and lightweight HTML/LaTeX documents with\n    the 'commonmark' package. This package has been superseded by 'litedown'.",
+        "Depends": "R (>= 2.11.1)",
+        "Imports": "utils, xfun, litedown (>= 0.6)",
+        "Suggests": "knitr, rmarkdown (>= 2.18), yaml, RCurl",
+        "License": "MIT + file LICENSE",
+        "URL": "https://github.com/rstudio/markdown",
+        "BugReports": "https://github.com/rstudio/markdown/issues",
+        "RoxygenNote": "7.3.2",
+        "Encoding": "UTF-8",
+        "NeedsCompilation": "no",
+        "Packaged": "2025-03-23 17:06:26 UTC; runner",
+        "Author": "Yihui Xie [aut, cre] (<https://orcid.org/0000-0003-0645-5666>),\n  JJ Allaire [aut],\n  Jeffrey Horner [aut],\n  Henrik Bengtsson [ctb],\n  Jim Hester [ctb],\n  Yixuan Qiu [ctb],\n  Kohske Takahashi [ctb],\n  Adam November [ctb],\n  Nacho Caballero [ctb],\n  Jeroen Ooms [ctb],\n  Thomas Leeper [ctb],\n  Joe Cheng [ctb],\n  Andrzej Oles [ctb],\n  Posit Software, PBC [cph, fnd]",
+        "Maintainer": "Yihui Xie <xie@yihui.name>",
+        "Repository": "CRAN",
+        "Date/Publication": "2025-03-23 19:30:03 UTC",
+        "Built": "R 4.5.0; ; 2025-04-01 06:34:24 UTC; unix"
       }
     },
     "memoise": {
@@ -1943,6 +2079,38 @@
         "Archs": "xfun.so.dSYM"
       }
     },
+    "xml2": {
+      "Source": "CRAN",
+      "Repository": "https://cran.rstudio.com",
+      "description": {
+        "Package": "xml2",
+        "Title": "Parse XML",
+        "Version": "1.6.0",
+        "Authors@R": "c(\n    person(\"Hadley\", \"Wickham\", role = \"aut\"),\n    person(\"Jim\", \"Hester\", role = \"aut\"),\n    person(\"Jeroen\", \"Ooms\", email = \"jeroenooms@gmail.com\", role = c(\"aut\", \"cre\")),\n    person(\"Posit Software, PBC\", role = c(\"cph\", \"fnd\")),\n    person(\"R Foundation\", role = \"ctb\",\n           comment = \"Copy of R-project homepage cached as example\")\n  )",
+        "Description": "Bindings to 'libxml2' for working with XML data using a simple, \n    consistent interface based on 'XPath' expressions. Also supports XML schema\n    validation; for 'XSLT' transformations see the 'xslt' package.",
+        "License": "MIT + file LICENSE",
+        "URL": "https://xml2.r-lib.org, https://r-lib.r-universe.dev/xml2",
+        "BugReports": "https://github.com/r-lib/xml2/issues",
+        "Depends": "R (>= 3.6.0)",
+        "Imports": "cli, methods, rlang (>= 1.1.0)",
+        "Suggests": "covr, curl, httr, knitr, mockery, rmarkdown, testthat (>=\n3.2.0), xslt",
+        "VignetteBuilder": "knitr",
+        "Config/Needs/website": "tidyverse/tidytemplate",
+        "Encoding": "UTF-8",
+        "RoxygenNote": "7.3.3",
+        "SystemRequirements": "libxml2: libxml2-dev (deb), libxml2-devel (rpm)",
+        "Collate": "'S4.R' 'as_list.R' 'xml_parse.R' 'as_xml_document.R'\n'classes.R' 'format.R' 'import-standalone-obj-type.R'\n'import-standalone-purrr.R' 'import-standalone-types-check.R'\n'init.R' 'nodeset_apply.R' 'paths.R' 'utils.R' 'xml2-package.R'\n'xml_attr.R' 'xml_children.R' 'xml_document.R' 'xml_find.R'\n'xml_missing.R' 'xml_modify.R' 'xml_name.R' 'xml_namespaces.R'\n'xml_node.R' 'xml_nodeset.R' 'xml_path.R' 'xml_schema.R'\n'xml_serialize.R' 'xml_structure.R' 'xml_text.R' 'xml_type.R'\n'xml_url.R' 'xml_write.R'",
+        "Config/testthat/edition": "3",
+        "NeedsCompilation": "yes",
+        "Packaged": "2026-06-22 13:32:25 UTC; jeroen",
+        "Author": "Hadley Wickham [aut],\n  Jim Hester [aut],\n  Jeroen Ooms [aut, cre],\n  Posit Software, PBC [cph, fnd],\n  R Foundation [ctb] (Copy of R-project homepage cached as example)",
+        "Maintainer": "Jeroen Ooms <jeroenooms@gmail.com>",
+        "Repository": "CRAN",
+        "Date/Publication": "2026-06-22 15:40:02 UTC",
+        "Built": "R 4.5.2; aarch64-apple-darwin20; 2026-06-22 16:30:54 UTC; unix",
+        "Archs": "xml2.so.dSYM"
+      }
+    },
     "xtable": {
       "Source": "CRAN",
       "Repository": "https://cran.rstudio.com",
@@ -2000,7 +2168,7 @@
   },
   "files": {
     "app.R": {
-      "checksum": "b0a9f62a621478b4e57eee712ee55f4c"
+      "checksum": "96cfd7fc2b2acae9235d0f1030b16bda"
     },
     "logo/FSP_Logo_Dark.png": {
       "checksum": "4be600f5aed9bf4ed807c8fc5093f974"
